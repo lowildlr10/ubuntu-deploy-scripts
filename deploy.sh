@@ -188,27 +188,27 @@ setup_nodejs_config() {
 	CONF="/etc/nginx/sites-available/${CONFIG_NAME}"
 	sudo tee "$CONF" > /dev/null <<EOF
 server {
-    listen $PORT;
+    listen 80;
     server_name _;
-	
-	root /home/$1/public_app;
-	index index.html index.htm;
 
-	location / {
-        try_files $uri $uri/ @node;
+    root /home/$1/$PUBLIC_DIRECTORY;
+    index index.html index.htm;
+
+    location / {
+        try_files \$uri \$uri/ @node;
     }
 
     location @node {
         proxy_pass http://localhost:$NODE_LOCAL_PORT;
         proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_cache_bypass $http_upgrade;
+        proxy_set_header Host \$host;
+        proxy_cache_bypass \$http_upgrade;
     }
 
-    access_log /home/$1/logs/${PUBLIC_DIRECTORY}_access.log;
-    error_log /home/$1/logs/${PUBLIC_DIRECTORY}_error.log;
+    access_log /home/$1/logs/public_app_access.log;
+    error_log /home/$1/logs/public_app_error.log;
 }
 EOF
 
