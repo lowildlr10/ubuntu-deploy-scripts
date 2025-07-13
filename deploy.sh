@@ -18,6 +18,71 @@ EOF
 	echo ""
 }
 
+install_php_version() {
+	local USERNAME="$1"
+	local PHP_VERSION="$2"
+	local USER_DIR="/home/$USERNAME"
+	local USER_POOL_DIR="$USER_DIR/php/pool.d"
+	local LOCAL_POOL_CONF="$USER_POOL_DIR/$USERNAME.conf"
+	local SYSTEM_POOL_CONF="/etc/php/$PHP_VERSION/fpm/pool.d/$USERNAME.conf"
+	local PHP_SOCK="/run/php/php$PHP_VERSION-$USERNAME.sock"
+	local BASHRC_PATH="$USER_DIR/.bashrc"
+
+	echo "📦 Installing PHP $PHP_VERSION and required libraries for '$USERNAME'..."
+
+	sudo apt update
+	sudo apt install -y \
+		"php$PHP_VERSION-cli" \
+		"php$PHP_VERSION-fpm" \
+		"php$PHP_VERSION-curl" \
+		"php$PHP_VERSION-mbstring" \
+		"php$PHP_VERSION-xml" \
+		"php$PHP_VERSION-gd" \
+		"php$PHP_VERSION-zip" \
+		"php$PHP_VERSION-mysql" \
+		"php$PHP_VERSION-pgsql"
+
+	echo "✅ PHP modules installed."
+
+	echo "Creating PHP-FPM pool config in $LOCAL_POOL_CONF..."
+	sudo mkdir -p "$USER_POOL_DIR"
+	sudo cp "/etc/php/$PHP_VERSION/fpm/pool.d/www.conf" "$LOCAL_POOL_CONF"
+
+	sudo sed -i "s/^\[www\]/\[$USERNAME\]/" "$LOCAL_POOL_CONF"
+	sudo sed -i "s|^user = .*|user = $USERNAME|" "$LOCAL_POOL_CONF"
+	sudo sed -i "s|^group = .*|group = $USERNAME|" "$LOCAL_POOL_CONF"
+	sudo sed -i "s|^listen = .*|listen = $PHP_SOCK|" "$LOCAL_POOL_CONF"
+
+	# Symlink to system pool directory
+	sudo ln -sf "$LOCAL_POOL_CONF" "$SYSTEM_POOL_CONF"
+
+	echo "✅ PHP-FPM pool linked at $SYSTEM_POOL_CONF using config from user directory."
+
+	sudo systemctl restart "php$PHP_VERSION-fpm"
+	echo "PHP-FPM restarted for version $PHP_VERSION"
+
+	# Optional bashrc enhancement
+	if [ -f "$BASHRC_PATH" ]; then
+		echo "🔧 Updating .bashrc for '$USERNAME' to use PHP $PHP_VERSION CLI..."
+
+		# Remove any existing alias for php to avoid duplication
+		sudo sed -i '/alias php=/d' "$BASHRC_PATH"
+
+		# Add PHP version alias and helpful info
+		{
+			echo ""
+			echo "# PHP CLI setup for version $PHP_VERSION"
+			echo "alias php='/usr/bin/php$PHP_VERSION'"
+			echo "alias php-fpm='/usr/sbin/php-fpm$PHP_VERSION'"
+			echo "# PHP-FPM socket: $PHP_SOCK"
+		} | sudo tee -a "$BASHRC_PATH" > /dev/null
+		echo "✅ .bashrc updated for PHP $PHP_VERSION"
+	fi
+
+	echo "✅ PHP $PHP_VERSION configured and isolated for '$USERNAME'."
+	echo ""
+}
+
 setup_default_directory() {
 	# $1 = 1: Monolithic, 2: Microservices, 3: Backend
 	# $2 = USERNAME
@@ -56,35 +121,57 @@ setup_nginx_config() {
 	# $5 = PORT
 	# $6 = IS_FRONTEND (Optional)
 	
-	PUBLIC_DIRECTORY="public_api"
-	CONFIG_NAME="${2}_api.conf"
-	PHP_VERSION=${4:-8.4}
-	PORT=${5:-8080}
-	IS_FRONTEND=${6:-n}
-	
-	if [[ "$3" == "1" ]]; then
-		PUBLIC_DIRECTORY="public_html"
-		CONFIG_NAME="${2}_html.conf"
-	fi
-	
-	if [[ "$3" == "2" ]] && [[ "$IS_FRONTEND" =~ ^[Yy]$ ]]; then
-		PUBLIC_DIRECTORY="public_app"
-		CONFIG_NAME="${2}_app.conf"
-	fi
+	local IS_LARAVEL=$1
+	local USERNAME=$2
+	local PROJECT_STRUCTURE=$3
+	local PHP_VERSION=${4:-8.4}
+	local PORT=${5:-8080}
+	local IS_FRONTEND=${6:-n}
 
-	CONF="/etc/nginx/sites-available/${CONFIG_NAME}"
+	local PUBLIC_DIRECTORY="public_api"
+	local LOG_NAME="${USERNAME}_api"
+	local CONFIG_NAME="${USERNAME}_api.conf"
+	
+	if [[ "$PROJECT_STRUCTURE" == "1" ]]; then
+		PUBLIC_DIRECTORY="public_html"
+		CONFIG_NAME="${USERNAME}_html.conf"
+		LOG_NAME="${USERNAME}_html"
+	fi
+	
+	if [[ "$PROJECT_STRUCTURE" == "2" ]] && [[ "$IS_FRONTEND" =~ ^[Yy]$ ]]; then
+		PUBLIC_DIRECTORY="public_app"
+		CONFIG_NAME="${USERNAME}_app.conf"
+		
+		if [[ "$IS_FRONTEND" =~ ^[Yy]$ ]]; then
+			LOG_NAME="${2}_app"
+		else
+			LOG_NAME="${2}_api"
+		fi
+	fi
+	
+	# Prepare user-specific nginx config directory
+	local USER_NGINX_DIR="/home/$USERNAME/nginx/sites-available"
+	local CONF="$USER_NGINX_DIR/$CONFIG_NAME"
+	
+	sudo mkdir -p "$USER_NGINX_DIR"
+	sudo chown -R "$USERNAME:www-data" "/home/$USERNAME/nginx"
+	
+	# Create empty log files
+	sudo touch "/home/$USERNAME/logs/${LOG_NAME}_access.log"
+	sudo touch "/home/$USERNAME/logs/${LOG_NAME}_error.log"
+	sudo chown $USERNAME:www-data "/home/$USERNAME/logs/${LOG_NAME}_access.log" "/home/$USERNAME/logs/${LOG_NAME}_error.log"
 	
 	if [[ "$IS_LARAVEL" =~ ^[Yy]$ ]]; then
-		mkdir /home/$2/$PUBLIC_DIRECTORY/public
-		echo "<html><body><h1>$2 - $PUBLIC_DIRECTORY is ready!</h1></body></html>" | tee /home/$2/$PUBLIC_DIRECTORY/public/index.html > /dev/null
-		sudo chown -R $2:www-data /home/$2/$PUBLIC_DIRECTORY/public
+		mkdir /home/$USERNAME/$PUBLIC_DIRECTORY/public
+		echo "<html><body><h1>$USERNAME - $PUBLIC_DIRECTORY is ready!</h1></body></html>" | tee /home/$USERNAME/$PUBLIC_DIRECTORY/public/index.html > /dev/null
+		sudo chown -R $USERNAME:www-data /home/$USERNAME/$PUBLIC_DIRECTORY/public
 		
 		sudo tee "$CONF" > /dev/null <<EOF
 server {
     listen $PORT;
     listen [::]:$PORT;
     server_name _;
-    root /home/$2/$PUBLIC_DIRECTORY/public;
+    root /home/$USERNAME/$PUBLIC_DIRECTORY/public;
 
     add_header X-Frame-Options "SAMEORIGIN";
     add_header X-Content-Type-Options "nosniff";
@@ -103,7 +190,7 @@ server {
     error_page 404 /index.php;
 
     location ~ ^/index\.php(/|$) {
-        fastcgi_pass unix:/var/run/php/php$PHP_VERSION-fpm.sock;
+        fastcgi_pass unix:/run/php/php$PHP_VERSION-$USERNAME.sock;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         include fastcgi_params;
         fastcgi_hide_header X-Powered-By;
@@ -113,20 +200,20 @@ server {
         deny all;
     }
 
-    access_log /home/$2/logs/${PUBLIC_DIRECTORY}_access.log;
-    error_log /home/$2/logs/${PUBLIC_DIRECTORY}_error.log;
+    access_log /home/$USERNAME/logs/${LOG_NAME}_access.log;
+    error_log /home/$USERNAME/logs/${LOG_NAME}_error.log;
 }
 EOF
 	else
-		echo "<html><body><h1>$2 - $PUBLIC_DIRECTORY is ready!</h1></body></html>" | tee /home/$2/$PUBLIC_DIRECTORY/index.html > /dev/null
-		sudo chown $2:www-data /home/$2/$PUBLIC_DIRECTORY/index.html
+		echo "<html><body><h1>$USERNAME - $PUBLIC_DIRECTORY is ready!</h1></body></html>" | tee /home/$USERNAME/$PUBLIC_DIRECTORY/index.html > /dev/null
+		sudo chown $USERNAME:www-data /home/$USERNAME/$PUBLIC_DIRECTORY/index.html
 	
 		sudo tee "$CONF" > /dev/null <<EOF
 server {
     listen $PORT;
     listen [::]:$PORT;
     server_name _;
-    root /home/$2/$PUBLIC_DIRECTORY/public;
+    root /home/$USERNAME/$PUBLIC_DIRECTORY/public;
 
 	index index.php index.html index.htm;
 
@@ -135,26 +222,28 @@ server {
 	}
 
 	location ~ \.php$ {
-		fastcgi_pass unix:/var/run/php/php$PHP_VERSION-fpm.sock;
+		fastcgi_pass unix:/run/php/php$PHP_VERSION-$USERNAME.sock;
 		fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
 		fastcgi_index index.php;
 		include fastcgi.conf;
     }
 	
-	access_log /home/$2/logs/${PUBLIC_DIRECTORY}_access.log;
-    error_log /home/$2/logs/${PUBLIC_DIRECTORY}_error.log;
+	access_log /home/$USERNAME/logs/${LOG_NAME}_access.log;
+    error_log /home/$USERNAME/logs/${LOG_NAME}_error.log;
 }
 EOF
 	fi
-
-	sudo ln -sf "$CONF" /etc/nginx/sites-enabled/
+	
+	# Symlink to global sites-enabled so nginx picks it up
+	sudo ln -sf "$CONF" "/etc/nginx/sites-enabled/$CONFIG_NAME"
+	
+	# Reload Nginx
 	sudo nginx -t && sudo systemctl reload nginx
 	echo "✅ Nginx configured for listen port $PORT"
 	
 	# --- UFW Firewall Rules ---
 	echo "🛡️  Applying UFW firewall rules..."
-	
-	sudo ufw allow "$PORT" comment "Allow Nginx + PHP listen port for $2"
+	sudo ufw allow "$PORT" comment "Allow Nginx + PHP listen port for $USERNAME"
 	echo "✅ UFW allowed listen port $PORT for Nginx + PHP"
 	echo ""
 }
@@ -166,39 +255,47 @@ setup_nodejs_config() {
 	# $4 = PORT
 	# $5 = IS_BACKEND (Optional)
 	
-	PUBLIC_DIRECTORY="public_app"
-	CONFIG_NAME="${1}_app.conf"
-	NODE_LOCAL_PORT=${3:-3000}
-	PORT=${4:-80}
-	IS_BACKEND=${5:-n}
+	local USERNAME=$1
+	local PROJECT_STRUCTURE=$2
+	local NODE_LOCAL_PORT=${3:-3000}
+	local PORT=${4:-80}
+	local IS_BACKEND=${5:-n}
+
+	local PUBLIC_DIRECTORY="public_app"
+	local CONFIG_NAME="${USERNAME}_app.conf"
+	local LOG_NAME="${USERNAME}_app"
 	
-	if [[ "$3" == "1" ]]; then
+	if [[ "$PROJECT_STRUCTURE" == "1" ]]; then
 		PUBLIC_DIRECTORY="public_html"
-		CONFIG_NAME="${1}_html.conf"
+		CONFIG_NAME="${USERNAME}_html.conf"
+		LOG_NAME="${USERNAME}_html"
 	fi
 	
-	if [[ "$2" == "3" ]] || ([[ "$2" == "2" ]] && [[ "$IS_BACKEND" =~ ^[Yy]$ ]]); then
+	if [[ "$PROJECT_STRUCTURE" == "3" ]] || ([[ "$PROJECT_STRUCTURE" == "2" ]] && [[ "$IS_BACKEND" =~ ^[Yy]$ ]]); then
 		PUBLIC_DIRECTORY="public_api"
-		CONFIG_NAME="${1}_api.conf"
+		CONFIG_NAME="${USERNAME}_api.conf"
+		LOG_NAME="${USERNAME}_api"
 	fi
 	
-	echo "<html><body><h1>$1 - $PUBLIC_DIRECTORY is ready!</h1></body></html>" | tee /home/$1/$PUBLIC_DIRECTORY/index.html > /dev/null
-	sudo chown $1:www-data /home/$1/$PUBLIC_DIRECTORY/index.html
+	# --- Prepare user nginx config directory ---
+	local USER_NGINX_DIR="/home/$USERNAME/nginx/sites-available"
+	local CONF="$USER_NGINX_DIR/$CONFIG_NAME"
 	
-	CONF="/etc/nginx/sites-available/${CONFIG_NAME}"
+	sudo mkdir -p "$USER_NGINX_DIR"
+	sudo chown -R "$USERNAME:www-data" "/home/$USERNAME/nginx"
+	
+	# Create log files
+	sudo touch "/home/$USERNAME/logs/${LOG_NAME}_access.log"
+	sudo touch "/home/$USERNAME/logs/${LOG_NAME}_error.log"
+	sudo chown $USERNAME:www-data "/home/$USERNAME/logs/${LOG_NAME}_access.log" "/home/$USERNAME/logs/${LOG_NAME}_error.log"
+	
+	# --- Write Nginx reverse proxy config ---
 	sudo tee "$CONF" > /dev/null <<EOF
 server {
-    listen 80;
+    listen $PORT;
     server_name _;
 
-    root /home/$1/$PUBLIC_DIRECTORY;
-    index index.html index.htm;
-
     location / {
-        try_files \$uri \$uri/ @node;
-    }
-
-    location @node {
         proxy_pass http://localhost:$NODE_LOCAL_PORT;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
@@ -207,19 +304,52 @@ server {
         proxy_cache_bypass \$http_upgrade;
     }
 
-    access_log /home/$1/logs/public_app_access.log;
-    error_log /home/$1/logs/public_app_error.log;
+    access_log /home/$1/logs/${LOG_NAME}_access.log;
+    error_log /home/$1/logs/${LOG_NAME}_app_error.log;
 }
 EOF
-
-	sudo ln -sf "$CONF" /etc/nginx/sites-enabled/
+	
+	# --- Enable site ---
+	sudo ln -sf "$CONF" "/etc/nginx/sites-enabled/$CONFIG_NAME"
 	sudo nginx -t && sudo systemctl reload nginx
 	echo "✅ Nginx reverse proxy configured for Node.js listen port $PORT"
 	
+	# --- Deploy Node.js test 'app.js' ---
+	echo "🚀 Deploying test app.js on port $NODE_LOCAL_PORT..."
+	sudo -u "$USERNAME" bash <<EOF
+export HOME=/home/$USERNAME
+export NVM_DIR="\$HOME/.nvm"
+[ -s "\$NVM_DIR/nvm.sh" ] && \. "\$NVM_DIR/nvm.sh"
+[ -s "\$NVM_DIR/bash_completion" ] && \. "\$NVM_DIR/bash_completion"
+
+mkdir -p /home/$USERNAME/$PUBLIC_DIRECTORY
+
+cat > /home/$USERNAME/$PUBLIC_DIRECTORY/app.js <<'EOL'
+const http = require('http');
+const port = process.env.PORT || $NODE_LOCAL_PORT;
+
+const server = http.createServer((req, res) => {
+  res.statusCode = 200;
+  res.setHeader('Content-Type', 'text/plain');
+  res.end('$USERNAME - $PUBLIC_DIRECTORY is ready!');
+});
+
+server.listen(port, () => {
+  console.log(\`Server running at http://localhost:\${port}/\`);
+});
+EOL
+
+cd /home/$USERNAME/$PUBLIC_DIRECTORY
+PORT=$NODE_LOCAL_PORT pm2 start app.js --name "${USERNAME}-app"
+pm2 save
+EOF
+
+	sudo chown $USERNAME:www-data /home/$USERNAME/$PUBLIC_DIRECTORY/app.js
+	echo "✅ Deployed test 'app.js' with PM2"
+
 	# --- UFW Firewall Rules ---
 	echo "🛡️  Applying UFW firewall rules..."
-
-	sudo ufw allow "$PORT" comment "Allow Node.js listen port for $1"
+	sudo ufw allow "$PORT" comment "Allow Node.js listen port for $USERNAME"
 	echo "✅ UFW allowed listen port $PORT for Node.js"
 	echo ""
 }
@@ -290,6 +420,7 @@ if [[ "$PROJECT_STRUCTURE" == "1" ]]; then
 		read -p "Enter listen port (default: 80): " PORT
 		PORT=${PORT:-80}
 
+		install_php_version "$USERNAME" "$PHP_VERSION"
 		setup_nginx_config "$IS_LARAVEL" "$USERNAME" "$PROJECT_STRUCTURE" "$PHP_VERSION" "$PORT"
 	fi
 elif [[ "$PROJECT_STRUCTURE" == "2" ]]; then
@@ -329,7 +460,8 @@ elif [[ "$PROJECT_STRUCTURE" == "2" ]]; then
 		read -p "Enter listen port (default: 80): " FRONTEND_PORT
 		FRONTEND_PORT=${FRONTEND_PORT:-80}
 
-		setup_nginx_config "$IS_LARAVEL" "$USERNAME" "$PROJECT_STRUCTURE" "FRONTEND_PHP_VERSION" "FRONTEND_PORT" "Y"
+		install_php_version "$USERNAME" "$FRONTEND_PHP_VERSION"
+		setup_nginx_config "$IS_LARAVEL" "$USERNAME" "$PROJECT_STRUCTURE" "FRONTEND_PHP_VERSION" "$FRONTEND_PORT" "Y"
 	fi
 	
 	if [[ "$BACKEND_SERVER" == "1" ]]; then
@@ -354,6 +486,7 @@ elif [[ "$PROJECT_STRUCTURE" == "2" ]]; then
 		read -p "Enter listen port (default: 8080): " BACKEND_PORT
 		BACKEND_PORT=${BACKEND_PORT:-8080}
 
+		install_php_version "$USERNAME" "$BACKEND_PHP_VERSION"
 		setup_nginx_config "$IS_LARAVEL" "$USERNAME" "$PROJECT_STRUCTURE" "$BACKEND_PHP_VERSION" "$BACKEND_PORT"
 	fi
 elif [[ "$PROJECT_STRUCTURE" == "3" ]]; then
@@ -379,8 +512,14 @@ elif [[ "$PROJECT_STRUCTURE" == "3" ]]; then
 		
 		read -p "Setup as Backend Laravel App? (Y/n): " IS_LARAVEL
 		IS_LARAVEL=${IS_LARAVEL:-n}
-		setup_nginx_config "$IS_LARAVEL" "$USERNAME" "3"
 		
+		read -p "Enter PHP-FPM version (default: 8.4): " BACKEND_PHP_VERSION
+		BACKEND_PHP_VERSION=${BACKEND_PHP_VERSION:-8.4}
+
+		read -p "Enter listen port (default: 8080): " BACKEND_PORT
+		BACKEND_PORT=${BACKEND_PORT:-8080}
+
+		install_php_version "$USERNAME" "$BACKEND_PHP_VERSION"
 		setup_nginx_config "$IS_LARAVEL" "$USERNAME" "$PROJECT_STRUCTURE" "$BACKEND_PHP_VERSION" "$BACKEND_PORT"
 	fi
 else
