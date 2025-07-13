@@ -77,7 +77,7 @@ setup_nginx_config() {
 	if [[ "$IS_LARAVEL" =~ ^[Yy]$ ]]; then
 		mkdir /home/$2/$PUBLIC_DIRECTORY/public
 		echo "<html><body><h1>$2 - $PUBLIC_DIRECTORY is ready!</h1></body></html>" | tee /home/$2/$PUBLIC_DIRECTORY/public/index.html > /dev/null
-		sudo chown $2:www-data /home/$2/$PUBLIC_DIRECTORY/public
+		sudo chown -R $2:www-data /home/$2/$PUBLIC_DIRECTORY/public
 		
 		sudo tee "$CONF" > /dev/null <<EOF
 server {
@@ -396,14 +396,16 @@ fi
 echo "🔧 Database Setup (0: None, 1: MySQL, 2: PostgreSQL)"
 read -p "Enter your choice: " DB_CHOICE
 if [[ "$DB_CHOICE" == "1" ]]; then
-  read -p "Enter DB name: " DB_NAME
-  DB_PASS=$(openssl rand -base64 12)
-  sudo mysql -e "CREATE DATABASE $DB_NAME; CREATE USER '$USERNAME'@'localhost' IDENTIFIED BY '$DB_PASS'; GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$USERNAME'@'localhost'; FLUSH PRIVILEGES;"
+	read -p "Enter DB name: " DB_NAME
+	DB_PASS=$(openssl rand -base64 12)
+	sudo mysql -e "CREATE DATABASE $DB_NAME; CREATE USER '$USERNAME'@'localhost' IDENTIFIED BY '$DB_PASS'; GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$USERNAME'@'localhost'; FLUSH PRIVILEGES;"
+	echo "✅ Databse '$DB_NAME' successfully created"
 elif [[ "$DB_CHOICE" == "2" ]]; then
-  read -p "Enter DB name: " DB_NAME
-  DB_PASS=$(openssl rand -base64 12)
-  sudo -u postgres psql -c "CREATE USER $USERNAME WITH PASSWORD '$DB_PASS';"
-  sudo -u postgres psql -c "CREATE DATABASE $DB_NAME OWNER $USERNAME;"
+	read -p "Enter DB name: " DB_NAME
+	DB_PASS=$(openssl rand -base64 12)
+	sudo -u postgres psql -c "CREATE USER $USERNAME WITH PASSWORD '$DB_PASS';"
+	sudo -u postgres psql -c "CREATE DATABASE $DB_NAME OWNER $USERNAME;"
+	echo ""
 fi
 
 # --- Composer (Local) ---
@@ -417,6 +419,7 @@ chmod +x composer
 echo 'export PATH=\$HOME:\$PATH' >> ~/.bashrc
 EOF
   echo "✅ Composer installed locally at /home/$USERNAME/composer and PATH updated"
+  echo ""
 fi
 
 # --- Supervisor for Laravel Queue ---
