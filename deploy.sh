@@ -234,6 +234,8 @@ server {
 EOF
 	fi
 	
+	sudo chown -R "$USERNAME:www-data" "/home/$USERNAME/nginx"
+	
 	# Symlink to global sites-enabled so nginx picks it up
 	sudo ln -sf "$CONF" "/etc/nginx/sites-enabled/$CONFIG_NAME"
 	
@@ -344,6 +346,8 @@ PORT=$NODE_LOCAL_PORT pm2 start app.js --name "${USERNAME}-app"
 pm2 save
 EOF
 
+	sudo chown -R "$USERNAME:www-data" "/home/$USERNAME/nginx"
+
 	sudo chown $USERNAME:www-data /home/$USERNAME/$PUBLIC_DIRECTORY/app.js
 	echo "✅ Deployed test 'app.js' with PM2"
 
@@ -360,14 +364,40 @@ echo "🚀 Starting Deployment..."
 # --- Create User ---
 read -p "Enter new username: " USERNAME
 USERNAME=$(echo "$USERNAME" | xargs)
-PASSWORD=$(openssl rand -base64 12)
 sudo useradd -m -s /bin/bash -G sudo,www-data "$USERNAME"
-echo "$USERNAME:$PASSWORD" | sudo chpasswd
 
 if ! id "$USERNAME" &>/dev/null; then
   echo "❌ Failed to create user '$USERNAME'."
   exit 1
 fi
+
+USER_HOME="/home/$USERNAME"
+SSH_DIR="$USER_HOME/.ssh"
+PRIVATE_KEY_PATH="$USER_HOME/${USERNAME}_id_rsa"
+PUBLIC_KEY_PATH="$PRIVATE_KEY_PATH.pub"
+
+# SSH Key Setup
+echo "Generating SSH key pair for $USERNAME..."
+sudo -u "$USERNAME" ssh-keygen -t rsa -b 4096 -f "$PRIVATE_KEY_PATH" -N "" > /dev/null
+
+sudo mkdir -p "$SSH_DIR"
+sudo cp "$PUBLIC_KEY_PATH" "$SSH_DIR/authorized_keys"
+sudo chown -R "$USERNAME:$USERNAME" "$SSH_DIR"
+sudo chmod 700 "$SSH_DIR"
+sudo chmod 600 "$SSH_DIR/authorized_keys"
+
+# Set user password for local login
+PASSWORD=$(openssl rand -base64 12)
+echo "$USERNAME:$PASSWORD" | sudo chpasswd
+
+# Configure SSHD to prioritize key login for new user only
+SSH_CONFIG_FILE="/etc/ssh/sshd_config.d/99-$USERNAME.conf"
+echo "Match User $USERNAME" | sudo tee "$SSH_CONFIG_FILE" > /dev/null
+echo "    PasswordAuthentication no" | sudo tee -a "$SSH_CONFIG_FILE" > /dev/null
+
+echo ""
+echo "✅ SSH key pair generated."
+echo ""
 
 # --- Project Structure ---
 echo "🔧 Project Structure (0: None, 1: Monolithic, 2: Microservices, 3: Backend)"
@@ -527,7 +557,13 @@ else
 	echo ""
 	echo "🎉 Deployment Summary:"
 	echo "👤 Username: $USERNAME"
-	echo "🔑 Password: $PASSWORD"
+	echo "🔑 Password (for local login): $PASSWORD"
+	echo "✅ Login using: ssh -i ${USERNAME}_id_rsa $USERNAME@<server-ip>"
+	echo ""
+	echo "🔑 ${USERNAME}_id_rsa:"
+	sudo cat "$PRIVATE_KEY_PATH"
+	echo ""
+	echo "✅ Done."
 	exit 1
 fi
 
@@ -601,6 +637,7 @@ fi
 echo "🎉 Deployment Summary:"
 echo "👤 Username: $USERNAME"
 echo "🔑 Password: $PASSWORD"
+echo "🔑 Password (for local login): $PASSWORD"
 
 if [[ "$DB_CHOICE" == "1" || "$DB_CHOICE" == "2" ]]; then
   echo "📚 DB: $DB_NAME, Password: $DB_PASS"
@@ -660,3 +697,10 @@ elif [[ "$PROJECT_STRUCTURE" == "3" ]]; then
 	echo "🌐 Access your backend API at: http://<server-ip>:${BACKEND_PORT:-8080}/"
 	echo ""
 fi
+
+echo "✅ Login using: ssh -i ${USERNAME}_id_rsa $USERNAME@<server-ip>"
+echo ""
+echo "🔑 ${USERNAME}_id_rsa:"
+sudo cat "$PRIVATE_KEY_PATH"
+echo ""
+echo "✅ Done."
