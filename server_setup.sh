@@ -23,6 +23,8 @@ log "Configuring UFW Firewall..."
 sudo ufw allow OpenSSH
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
+sudo ufw allow 3306/tcp
+sudo ufw allow 5432/tcp
 sudo ufw --force enable
 sudo ufw status verbose
 
@@ -35,12 +37,28 @@ sudo systemctl enable --now nginx
 log "Installing MySQL..."
 sudo apt install -y mysql-server
 sudo systemctl enable --now mysql
-log "✔ Run 'sudo mysql_secure_installation' to secure MySQL"
+
+# Configure MySQL to listen on all IP addresses
+sudo sed -i "s/^bind-address\s*=.*/bind-address = 0.0.0.0/" /etc/mysql/mysql.conf.d/mysqld.cnf
+
+sudo systemctl restart mysql
+log "✔ MySQL now accepts remote connections on port 3306"
+log "⚠️ Be sure to secure MySQL and remove remote root access if not needed!"
 
 # --- 5. PostgreSQL ---
 log "Installing PostgreSQL..."
 sudo apt install -y postgresql postgresql-contrib
 sudo systemctl enable --now postgresql
+
+# Configure PostgreSQL to listen on all IP addresses
+PG_HBA="/etc/postgresql/$(ls /etc/postgresql)/main/pg_hba.conf"
+POSTGRESQL_CONF="/etc/postgresql/$(ls /etc/postgresql)/main/postgresql.conf"
+
+sudo sed -i "s/#listen_addresses = .*/listen_addresses = '*'/" "$POSTGRESQL_CONF"
+echo "host    all             all             0.0.0.0/0               md5" | sudo tee -a "$PG_HBA" > /dev/null
+
+sudo systemctl restart postgresql
+log "✔ PostgreSQL now accepts remote connections on port 5432"
 
 # --- 6. PHP & FPM ---
 log "Installing PHP and FPM..."
@@ -72,6 +90,6 @@ sudo apt install -y nodejs
 
 log "✅ Server setup complete."
 echo "📦 PHP version: $PHP_VERSION"
-echo "📂 Nginx sites: /etc/nginx/sites-available/"
+echo "📂 Nginx sites: /home/<username>/nginx/sites-available/"
 echo "🚀 Use 'pm2' or Supervisor for Node/Laravel process management."
 echo "🔐 Secure MySQL: sudo mysql_secure_installation"

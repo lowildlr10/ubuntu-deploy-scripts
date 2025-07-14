@@ -48,16 +48,31 @@ install_php_version() {
 	sudo mkdir -p "$USER_POOL_DIR"
 	sudo cp "/etc/php/$PHP_VERSION/fpm/pool.d/www.conf" "$LOCAL_POOL_CONF"
 
+	# Update pool name and user/group
 	sudo sed -i "s/^\[www\]/\[$USERNAME\]/" "$LOCAL_POOL_CONF"
 	sudo sed -i "s|^user = .*|user = $USERNAME|" "$LOCAL_POOL_CONF"
 	sudo sed -i "s|^group = .*|group = $USERNAME|" "$LOCAL_POOL_CONF"
 	sudo sed -i "s|^listen = .*|listen = $PHP_SOCK|" "$LOCAL_POOL_CONF"
 
+	# Set custom PHP settings
+	sudo tee -a "$LOCAL_POOL_CONF" > /dev/null <<EOF
+
+; Custom PHP settings for user $USERNAME
+php_admin_value[memory_limit] = 256M
+php_admin_value[upload_max_filesize] = 256M
+php_admin_value[post_max_size] = 256M
+php_admin_value[max_execution_time] = 120
+php_admin_value[max_input_time] = 120
+php_admin_value[max_file_uploads] = 50
+EOF
+
+	echo "✅ Custom memory/upload limits added."
+
 	# Symlink to system pool directory
 	sudo ln -sf "$LOCAL_POOL_CONF" "$SYSTEM_POOL_CONF"
-
 	echo "✅ PHP-FPM pool linked at $SYSTEM_POOL_CONF using config from user directory."
 
+	# Restart PHP-FPM service
 	sudo systemctl restart "php$PHP_VERSION-fpm"
 	echo "PHP-FPM restarted for version $PHP_VERSION"
 
@@ -110,6 +125,29 @@ setup_default_directory() {
 	sudo chmod o+x /home/$2
 
 	echo "📂 Directories created."
+	echo ""
+}
+
+setup_nginx_custom_commands() {
+	# $1 = USERNAME
+	local USERNAME="$1"
+	local USER_HOME="/home/$USERNAME"
+	local USER_NGINX_DIR="$USER_HOME/nginx/sites-available"
+	local BASHRC="$USER_HOME/.bashrc"
+
+	echo "🔧 Adding Nginx helper commands (ngxensite, ngxdissite) for $USERNAME..."
+
+	sudo tee -a "$BASHRC" > /dev/null <<EOF
+
+# --- Custom Nginx Commands for $USERNAME ---
+alias ngxensite='function _ngxensite() { sudo ln -sf "$USER_NGINX_DIR/\$1" /etc/nginx/sites-enabled/\$1; }; _ngxensite'
+alias ngxdissite='function _ngxdissite() { sudo rm -f /etc/nginx/sites-enabled/\$1; }; _ngxdissite'
+alias ngxtest='sudo nginx -t'
+alias ngxreload='sudo nginx -t && sudo systemctl reload nginx'
+EOF
+
+	sudo chown "$USERNAME:$USERNAME" "$BASHRC"
+	echo "✅ Added Nginx command aliases to $USERNAME's .bashrc"
 	echo ""
 }
 
@@ -307,7 +345,7 @@ server {
     }
 
     access_log /home/$1/logs/${LOG_NAME}_access.log;
-    error_log /home/$1/logs/${LOG_NAME}_app_error.log;
+    error_log /home/$1/logs/${LOG_NAME}_error.log;
 }
 EOF
 	
@@ -358,6 +396,7 @@ EOF
 	echo ""
 }
 
+# --------------------------------------------------------------------------------
 
 echo "🚀 Starting Deployment..."
 
@@ -578,9 +617,8 @@ elif [[ "$PROJECT_STRUCTURE" == "3" ]]; then
 else
 	# --- Summary ---
 	echo ""
+	echo "------------------------------------------------------------------------"
 	echo "🎉 Deployment Summary:"
-
-	echo ""
 	echo "------------------------------------------------------------------------"
 
 	echo "👤 Username: $USERNAME"
@@ -590,9 +628,7 @@ else
 	echo "✅ Login using: ssh -i ${USERNAME}_id_rsa $USERNAME@<server-ip>"
 	echo ""
 	echo "🔑 Private Key: $PRIVATE_KEY_PATH"
-	echo "--------------------------------------------------------------"
 	sudo cat "$PRIVATE_KEY_PATH"
-	echo "--------------------------------------------------------------"
 	echo ""
 	echo "📌 Add this key to your SSH agent or use it to connect via:"
 	echo "    ssh -i $PRIVATE_KEY_PATH $USERNAME@<your-server-ip>"
@@ -600,6 +636,10 @@ else
 	echo "------------------------------------------------------------------------"
 	echo ""
 	exit 1
+fi
+
+if [[ "$NEED_NGINX" =~ ^[Yy]$ ]] || [[ "$NEED_FRONTEND_NGINX" =~ ^[Yy]$ ]] || [[ "$NEED_BACKEND_NGINX" =~ ^[Yy]$ ]]; then
+	setup_nginx_custom_commands "$USERNAME"
 fi
 
 # --- Database Setup ---
@@ -632,29 +672,6 @@ EOF
   echo ""
 fi
 
-# --- Supervisor for Laravel Queue ---
-read -p "Enable Supervisor for Laravel queue worker? (Y/n): " ENABLE_SUPERVISOR
-if [[ "$ENABLE_SUPERVISOR" =~ ^[Yy]$ ]]; then
-  sudo apt install -y supervisor
-  sudo tee "/etc/supervisor/conf.d/${USERNAME}_queue.conf" > /dev/null <<EOF
-[program:${USERNAME}_queue]
-command=/usr/bin/php /home/$USERNAME/public_api/artisan queue:work --sleep=3 --tries=3 --timeout=90
-directory=/home/$USERNAME/public_api
-autostart=true
-autorestart=true
-user=$USERNAME
-redirect_stderr=true
-stdout_logfile=/home/$USERNAME/logs/queue_worker.log
-stopasgroup=true
-killasgroup=true
-EOF
-  sudo supervisorctl reread
-  sudo supervisorctl update
-  sudo supervisorctl start "${USERNAME}_queue"
-  echo "✅ Supervisor queue worker started"
-  echo ""
-fi
-
 # --- SSL (Optional) ---
 read -p "Apply SSL via Let's Encrypt? (Y/n): " NEED_SSL
 if [[ "$NEED_SSL" =~ ^[Yy]$ ]]; then
@@ -669,10 +686,8 @@ if [[ "$NEED_SSL" =~ ^[Yy]$ ]]; then
 fi
 
 # --- Summary ---
-echo ""
+echo "------------------------------------------------------------------------"
 echo "🎉 Deployment Summary:"
-
-echo ""
 echo "------------------------------------------------------------------------"
 
 echo "👤 Username: $USERNAME"
@@ -682,9 +697,7 @@ echo ""
 echo "✅ Login using: ssh -i ${USERNAME}_id_rsa $USERNAME@<server-ip>"
 echo ""
 echo "🔑 Private Key: $PRIVATE_KEY_PATH"
-echo "--------------------------------------------------------------"
 sudo cat "$PRIVATE_KEY_PATH"
-echo "--------------------------------------------------------------"
 echo ""
 echo "📌 Add this key to your SSH agent or use it to connect via:"
 echo "    ssh -i $PRIVATE_KEY_PATH $USERNAME@<your-server-ip>"
@@ -738,18 +751,12 @@ fi
 echo "------------------------------------------------------------------------"
 
 if [[ "$PROJECT_STRUCTURE" == "1" ]]; then
-	echo ""
 	echo "🌐 Access your App at: http://<server-ip>:${PORT:-80}/"
-	echo ""
 elif [[ "$PROJECT_STRUCTURE" == "2" ]]; then
-	echo ""
 	echo "🌐 Access your frontend app at: http://<server-ip>:${FRONTEND_PORT:-80}/"
 	echo "🌐 Access your backend API at: http://<server-ip>:${BACKEND_PORT:-8080}/"
-	echo ""
 elif [[ "$PROJECT_STRUCTURE" == "3" ]]; then
-	echo ""
 	echo "🌐 Access your backend API at: http://<server-ip>:${BACKEND_PORT:-8080}/"
-	echo ""
 fi
 
 echo "------------------------------------------------------------------------"
