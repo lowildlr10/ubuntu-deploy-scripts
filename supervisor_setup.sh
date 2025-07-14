@@ -5,85 +5,119 @@
 set -e
 
 setup_supervisor() {
-	# $1 = USERNAME
-	# $2 = PUBLIC_DIRECTORY
-	
 	local USERNAME=$1
 	local PUBLIC_DIRECTORY=${2:-public_api}
+	local USER_HOME="/home/$USERNAME"
+	local APP_DIR="$USER_HOME/$PUBLIC_DIRECTORY"
+	local SUPERVISOR_DIR="$USER_HOME/supervisor"
+	local LOG_DIR="$USER_HOME/logs"
+	local BASHRC="$USER_HOME/.bashrc"
+	local WRAPPER_SCRIPT="$USER_HOME/run_queue.sh"
 
+	echo "📦 Setting up Supervisor for Laravel Queue..."
+	sudo apt install -y supervisor
+
+	mkdir -p "$SUPERVISOR_DIR" "$LOG_DIR"
 	
-	read -p "Enable Supervisor for Laravel queue worker? (Y/n): " ENABLE_SUPERVISOR
+	echo "Validating Laravel setup in $APP_DIR..."
+	if [[ ! -f "$APP_DIR/artisan" ]]; then
+		echo "❌ Missing artisan at $APP_DIR/artisan. Make sure the Laravel app is deployed."
+		exit 1
+	fi
+	
+	# Detect PHP binary from user's interactive shell (respect alias)
+	PHP_BIN=$(sudo -u "$USERNAME" bash -i -c 'type -P php')
 
-	# Normalize input and check
-	ENABLE_SUPERVISOR=$(echo "$ENABLE_SUPERVISOR" | tr -d '\r' | xargs)
+	if [[ -z "$PHP_BIN" || ! -x "$PHP_BIN" ]]; then
+		echo "❌ PHP binary not found or not executable: $PHP_BIN"
+		exit 1
+	fi
+	
+	echo "✅ Found PHP: $PHP_BIN"
+	echo "✅ Found Artisan: $APP_DIR/artisan"
+	
+	echo "Testing artisan queue worker..."
+	sudo -u "$USERNAME" bash -c "cd $APP_DIR && $PHP_BIN artisan queue:work --once" || {
+		echo "❌ Laravel queue worker test failed. Fix Laravel errors before proceeding."
+		exit 1
+	}
+	
+	# Create wrapper shell script
+	echo "Creating Laravel queue wrapper script..."
+	cat > "$WRAPPER_SCRIPT" <<EOF
+#!/bin/bash
+cd "$APP_DIR"
+source "$BASHRC"
+$PHP_BIN artisan queue:work --sleep=3 --tries=3 --timeout=90
+EOF
 
-	if [ "$ENABLE_SUPERVISOR" = "Y" ] || [ "$ENABLE_SUPERVISOR" = "y" ]; then
-		echo "📦 Setting up Supervisor for Laravel Queue..."
+	chmod +x "$WRAPPER_SCRIPT"
+	chown "$USERNAME:$USERNAME" "$WRAPPER_SCRIPT"
 
-		sudo apt install -y supervisor
-
-		local USER_HOME="/home/$USERNAME"
-		local SUPERVISOR_DIR="$USER_HOME/supervisor"
-		local LOG_DIR="$USER_HOME/logs"
-		local BASHRC="$USER_HOME/.bashrc"
-
-		mkdir -p "$SUPERVISOR_DIR" "$LOG_DIR"
-
-		# Write main supervisor queue config
-		cat > "$SUPERVISOR_DIR/queue.conf" <<EOF
+	# Write Supervisor config
+	echo "Writing Supervisor config..."
+	cat > "$SUPERVISOR_DIR/queue.conf" <<EOF
 [program:${USERNAME}_queue]
-process_name=%(program_name)s_%(process_num)02d
-command=/usr/bin/php $USER_HOME/$PUBLIC_DIRECTORY/artisan queue:work --sleep=3 --tries=3 --timeout=90
-directory=$USER_HOME/$PUBLIC_DIRECTORY
+command=$WRAPPER_SCRIPT
+directory=$APP_DIR
 autostart=true
 autorestart=true
 user=$USERNAME
 redirect_stderr=true
 stdout_logfile=$LOG_DIR/queue_worker.log
+stderr_logfile=$LOG_DIR/queue_worker_error.log
 stopasgroup=true
 killasgroup=true
-numprocs=20
 EOF
 
-		# Symlink and activate
-		sudo ln -sf "$SUPERVISOR_DIR/queue.conf" "/etc/supervisor/conf.d/${USERNAME}_queue.conf"
-		sudo supervisorctl reread
-		sudo supervisorctl update
-		sudo supervisorctl start "${USERNAME}_queue"
+	echo "Linking and starting Supervisor config..."
+	sudo ln -sf "$SUPERVISOR_DIR/queue.conf" "/etc/supervisor/conf.d/${USERNAME}_queue.conf"
+	sudo supervisorctl reread
+	sudo supervisorctl update
+	sudo supervisorctl start "${USERNAME}_queue"
 
-		echo "✅ Supervisor queue worker started for $USERNAME"
-		echo "🗂️  Config: $SUPERVISOR_DIR/queue.conf"
-		echo "📄 Log: $LOG_DIR/queue_worker.log"
+	echo "✅ Supervisor queue worker started for $USERNAME"
+	echo "🗂️ Config: $SUPERVISOR_DIR/queue.conf"
+	echo "📄 Logs: $LOG_DIR/queue_worker.log, $LOG_DIR/queue_worker_error.log"
 
-		# Bash helpers
-		echo "🧩 Adding bash queue helper commands..."
-		cat >> "$BASHRC" <<'EOF'
+	echo "Adding bash helper commands..."
+	cat >> "$BASHRC" <<'EOF'
 
 # === Laravel Queue Supervisor Helpers ===
 
 add-queue() {
   local queue_name="${1:-default}"
   local user="$(whoami)"
-  local app_dir="/home/$user/$PUBLIC_DIRECTORY"
+  local app_dir="/home/$user/public_api"
   local conf_dir="/home/$user/supervisor"
   local log_dir="/home/$user/logs"
+  local wrapper_script="/home/$user/run_queue_${queue_name}.sh"
+  local php_bin=$(bash -i -c 'type -P php')
   local conf_file="$conf_dir/${queue_name}.conf"
 
   mkdir -p "$conf_dir" "$log_dir"
 
+  cat > "$wrapper_script" <<EOL
+#!/bin/bash
+cd "$app_dir"
+source "/home/$user/.bashrc"
+$php_bin artisan queue:work --queue=${queue_name} --sleep=3 --tries=3 --timeout=90
+EOL
+
+  chmod +x "$wrapper_script"
+
   cat > "$conf_file" <<EOL
 [program:${user}_queue_${queue_name}]
-process_name=%(program_name)s_%(process_num)02d
-command=/usr/bin/php $app_dir/artisan queue:work --queue=${queue_name} --sleep=3 --tries=3 --timeout=90
+command=$wrapper_script
 directory=$app_dir
 autostart=true
 autorestart=true
 user=$user
 redirect_stderr=true
 stdout_logfile=$log_dir/queue_${queue_name}.log
+stderr_logfile=$log_dir/queue_${queue_name}_error.log
 stopasgroup=true
 killasgroup=true
-numprocs=20
 EOL
 
   sudo ln -sf "$conf_file" /etc/supervisor/conf.d/${user}_queue_${queue_name}.conf
@@ -100,9 +134,11 @@ remove-queue() {
   sudo rm -f /etc/supervisor/conf.d/${user}_queue_${queue_name}.conf
   sudo rm -f /home/$user/supervisor/${queue_name}.conf
   sudo rm -f /home/$user/logs/queue_${queue_name}.log
+  sudo rm -f /home/$user/logs/queue_${queue_name}_error.log
+  sudo rm -f /home/$user/run_queue_${queue_name}.sh
   sudo supervisorctl reread
   sudo supervisorctl update
-  echo "🗑️  Queue '${queue_name}' removed."
+  echo "✅ Queue '${queue_name}' removed."
 }
 
 restart-queue() {
@@ -112,14 +148,8 @@ restart-queue() {
 }
 EOF
 
-		sudo chown "$USERNAME:$USERNAME" "$BASHRC"
-		echo "✅ Added bash helpers: add-queue, remove-queue, restart-queue"
-		echo ""
-	else
-		echo "❌ Supervisor setup skipped."
-	exit 0
-fi
-
+	sudo chown "$USERNAME:$USERNAME" "$BASHRC"
+	echo "✅ Added bash helpers: add-queue, remove-queue, restart-queue"
 }
 
 # --------------------------------------------------------------------------------
@@ -128,7 +158,7 @@ echo "🚀 Starting Supervisor Setup..."
 
 # --- Inital Information ---
 read -p "👤 Enter username: " USERNAME
-USERNAME=$(echo "$USERNAME" | xargs)  # Trim spaces
+USERNAME=$(echo "$USERNAME" | xargs)
 
 # Empty input check
 if [ -z "$USERNAME" ]; then
@@ -148,4 +178,5 @@ fi
 
 read -p "Enter app path (default 'public_api'): " PUBLIC_DIRECTORY
 PUBLIC_DIRECTORY=${PUBLIC_DIRECTORY:-public_api}
+
 setup_supervisor "$USERNAME" "$PUBLIC_DIRECTORY"
