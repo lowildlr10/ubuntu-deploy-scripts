@@ -373,30 +373,53 @@ fi
 
 USER_HOME="/home/$USERNAME"
 SSH_DIR="$USER_HOME/.ssh"
-PRIVATE_KEY_PATH="$USER_HOME/${USERNAME}_id_rsa"
+PRIVATE_KEY_PATH="$SSH_DIR/${USERNAME}_id_rsa"
 PUBLIC_KEY_PATH="$PRIVATE_KEY_PATH.pub"
 
 # SSH Key Setup
 echo "Generating SSH key pair for $USERNAME..."
+sudo -u "$USERNAME" mkdir -p "$SSH_DIR"
 sudo -u "$USERNAME" ssh-keygen -t rsa -b 4096 -f "$PRIVATE_KEY_PATH" -N "" > /dev/null
 
-sudo mkdir -p "$SSH_DIR"
-sudo cp "$PUBLIC_KEY_PATH" "$SSH_DIR/authorized_keys"
+# Set correct permissions and ownership
 sudo chown -R "$USERNAME:$USERNAME" "$SSH_DIR"
 sudo chmod 700 "$SSH_DIR"
+sudo chmod 600 "$PRIVATE_KEY_PATH" "$PUBLIC_KEY_PATH"
+
+# Configure authorized_keys
+cat "$PUBLIC_KEY_PATH" | sudo tee "$SSH_DIR/authorized_keys" > /dev/null
+sudo chown "$USERNAME:$USERNAME" "$SSH_DIR/authorized_keys"
 sudo chmod 600 "$SSH_DIR/authorized_keys"
 
 # Set user password for local login
 PASSWORD=$(openssl rand -base64 12)
 echo "$USERNAME:$PASSWORD" | sudo chpasswd
 
-# Configure SSHD to prioritize key login for new user only
-SSH_CONFIG_FILE="/etc/ssh/sshd_config.d/99-$USERNAME.conf"
-echo "Match User $USERNAME" | sudo tee "$SSH_CONFIG_FILE" > /dev/null
-echo "    PasswordAuthentication no" | sudo tee -a "$SSH_CONFIG_FILE" > /dev/null
+# --- SSH Match Block Config ---
+SSH_CONFIG_FILE="/etc/ssh/sshd_config.d/99-${USERNAME}.conf"
+
+{
+  echo "Match User $USERNAME"
+  echo "    PasswordAuthentication no"
+  echo "    AuthenticationMethods publickey"
+} | sudo tee "$SSH_CONFIG_FILE" > /dev/null
+
+# Ensure config permissions
+sudo chmod 644 "$SSH_CONFIG_FILE"
+
+# Restart SSH to apply changes
+sudo systemctl restart ssh
+
+# --- Validate SSH Config ---
+echo "🔍 Verifying SSH daemon config for '$USERNAME'..."
+if sudo sshd -T | grep -iq "user $USERNAME"; then
+  echo "✅ SSH Match block loaded correctly for '$USERNAME'"
+else
+  echo "⚠️ Match block not picked up by sshd. You may need to add it directly to /etc/ssh/sshd_config"
+fi
 
 echo ""
-echo "✅ SSH key pair generated."
+echo "✅ SSH key pair generated and configured for $USERNAME"
 echo ""
 
 # --- Project Structure ---
@@ -556,14 +579,26 @@ else
 	# --- Summary ---
 	echo ""
 	echo "🎉 Deployment Summary:"
+
+	echo ""
+	echo "------------------------------------------------------------------------"
+
 	echo "👤 Username: $USERNAME"
 	echo "🔑 Password (for local login): $PASSWORD"
+	echo "⚠️ Store this password securely for terminal/console login."
+	echo ""
 	echo "✅ Login using: ssh -i ${USERNAME}_id_rsa $USERNAME@<server-ip>"
 	echo ""
-	echo "🔑 ${USERNAME}_id_rsa:"
+	echo "🔑 Private Key: $PRIVATE_KEY_PATH"
+	echo "--------------------------------------------------------------"
 	sudo cat "$PRIVATE_KEY_PATH"
+	echo "--------------------------------------------------------------"
 	echo ""
-	echo "✅ Done."
+	echo "📌 Add this key to your SSH agent or use it to connect via:"
+	echo "    ssh -i $PRIVATE_KEY_PATH $USERNAME@<your-server-ip>"
+
+	echo "------------------------------------------------------------------------"
+	echo ""
 	exit 1
 fi
 
@@ -634,10 +669,27 @@ if [[ "$NEED_SSL" =~ ^[Yy]$ ]]; then
 fi
 
 # --- Summary ---
+echo ""
 echo "🎉 Deployment Summary:"
+
+echo ""
+echo "------------------------------------------------------------------------"
+
 echo "👤 Username: $USERNAME"
-echo "🔑 Password: $PASSWORD"
 echo "🔑 Password (for local login): $PASSWORD"
+echo "⚠️ Store this password securely for terminal/console login."
+echo ""
+echo "✅ Login using: ssh -i ${USERNAME}_id_rsa $USERNAME@<server-ip>"
+echo ""
+echo "🔑 Private Key: $PRIVATE_KEY_PATH"
+echo "--------------------------------------------------------------"
+sudo cat "$PRIVATE_KEY_PATH"
+echo "--------------------------------------------------------------"
+echo ""
+echo "📌 Add this key to your SSH agent or use it to connect via:"
+echo "    ssh -i $PRIVATE_KEY_PATH $USERNAME@<your-server-ip>"
+
+echo "------------------------------------------------------------------------"
 
 if [[ "$DB_CHOICE" == "1" || "$DB_CHOICE" == "2" ]]; then
   echo "📚 DB: $DB_NAME, Password: $DB_PASS"
@@ -683,6 +735,8 @@ elif [[ "$PROJECT_STRUCTURE" == "3" ]]; then
 	fi
 fi
 
+echo "------------------------------------------------------------------------"
+
 if [[ "$PROJECT_STRUCTURE" == "1" ]]; then
 	echo ""
 	echo "🌐 Access your App at: http://<server-ip>:${PORT:-80}/"
@@ -698,9 +752,4 @@ elif [[ "$PROJECT_STRUCTURE" == "3" ]]; then
 	echo ""
 fi
 
-echo "✅ Login using: ssh -i ${USERNAME}_id_rsa $USERNAME@<server-ip>"
-echo ""
-echo "🔑 ${USERNAME}_id_rsa:"
-sudo cat "$PRIVATE_KEY_PATH"
-echo ""
-echo "✅ Done."
+echo "------------------------------------------------------------------------"

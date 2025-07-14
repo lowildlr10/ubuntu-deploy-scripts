@@ -65,11 +65,12 @@ EOF
 sudo rm -rf "/home/$USERNAME/.pm2"
 echo "✅ PM2 cleanup done."
 
-# --- Remove Nginx Configs ---
-echo "🧹 Removing Nginx configs..."
+# --- Remove Nginx and SSH Configs ---
+echo "🧹 Removing Nginx and SSH configs..."
 sudo rm -f "/etc/nginx/sites-enabled/${USERNAME}_*"
 sudo rm -f "/etc/nginx/sites-available/${USERNAME}_*"
 sudo rm -f "/home/${USERNAME}/nginx/sites-available/${USERNAME}_*"
+sudo rm -f "/etc/ssh/sshd_config.d/99-${USERNAME}.conf"
 
 if sudo nginx -t &>/dev/null; then
   sudo systemctl reload nginx
