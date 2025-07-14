@@ -406,8 +406,8 @@ USERNAME=$(echo "$USERNAME" | xargs)
 sudo useradd -m -s /bin/bash -G sudo,www-data "$USERNAME"
 
 if ! id "$USERNAME" &>/dev/null; then
-  echo "❌ Failed to create user '$USERNAME'."
-  exit 1
+	echo "❌ Failed to create user '$USERNAME'."
+	exit 1
 fi
 
 USER_HOME="/home/$USERNAME"
@@ -438,9 +438,9 @@ echo "$USERNAME:$PASSWORD" | sudo chpasswd
 SSH_CONFIG_FILE="/etc/ssh/sshd_config.d/99-${USERNAME}.conf"
 
 {
-  echo "Match User $USERNAME"
-  echo "    PasswordAuthentication no"
-  echo "    AuthenticationMethods publickey"
+	echo "Match User $USERNAME"
+	echo "    PasswordAuthentication no"
+	echo "    AuthenticationMethods publickey"
 } | sudo tee "$SSH_CONFIG_FILE" > /dev/null
 
 # Ensure config permissions
@@ -451,10 +451,21 @@ sudo systemctl restart ssh
 
 # --- Validate SSH Config ---
 echo "🔍 Verifying SSH daemon config for '$USERNAME'..."
-if sudo sshd -T | grep -iq "user $USERNAME"; then
-  echo "✅ SSH Match block loaded correctly for '$USERNAME'"
+if sudo sshd -T -C user="$USERNAME" 2>/dev/null | grep -q "passwordauthentication no"; then
+	echo "✅ SSH Match block applied correctly for '$USERNAME'"
 else
-  echo "⚠️ Match block not picked up by sshd. You may need to add it directly to /etc/ssh/sshd_config"
+	echo "⚠️ SSH Match block may not be taking effect for '$USERNAME'"
+fi
+
+# Safely copy the private key file to the current user's home directory for easier access
+read -p " Enter a username to copy '${USERNAME}_id_rsa' to (optional): " OTHER_USERNAME
+OTHER_USERNAME=$(echo "$OTHER_USERNAME" | xargs)
+
+# Empty input check
+if [ -n "$OTHER_USERNAME" ]; then
+	OTHER_USER_HOME="/home/$OTHER_USERNAME"
+	sudo cp "$PRIVATE_KEY_PATH" "$OTHER_USER_HOME/${USERNAME}_id_rsa"
+	sudo chown "$OTHER_USERNAME:$OTHER_USERNAME" "$OTHER_USER_HOME/${USERNAME}_id_rsa"
 fi
 
 echo ""
