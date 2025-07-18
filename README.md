@@ -131,6 +131,16 @@ git clone <repository-url> public_api
 - Set required environment/configuration files
 - Set correct file and folder permissions
 
+### 🔄 (Optional) Configure Supervisor for Queue Jobs
+
+If your application uses background jobs (e.g. Laravel queues), run the Supervisor setup script:
+
+```bash
+./supervisor_setup.sh
+```
+
+Follow the prompt to enter the username when asked.
+
 ### Database Credentials
 
 | Type    | Host      | Username             | Password                    |
