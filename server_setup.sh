@@ -88,6 +88,9 @@ log "Installing Node.js..."
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
 
+# --- 8. Zip and Unzip ---
+sudo apt install zip unzip -y
+
 log "✅ Server setup complete."
 echo "📦 PHP version: $PHP_VERSION"
 echo "📂 Nginx sites: /home/<username>/nginx/sites-available/"

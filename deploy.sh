@@ -5,13 +5,16 @@
 set -e
 
 install_nodejs() {
+	local USERNAME="$1"
+	local NODE_VERSION="${2:---lts}"
+
 	echo "Installing Node.js and PM2..."
-	sudo -u "$1" bash <<EOF
-export HOME=/home/$1
+	sudo -u "$USERNAME" bash <<EOF
+export HOME=/home/$USERNAME
 export NVM_DIR="\$HOME/.nvm"
 curl -o-  https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
 [ -s "\$NVM_DIR/nvm.sh" ] && \. "\$NVM_DIR/nvm.sh"
-nvm install --lts
+nvm install $NODE_VERSION
 npm install -g pm2
 EOF
 	echo "✅ Node.js and PM2 installed locally"
@@ -502,7 +505,9 @@ if [[ "$PROJECT_STRUCTURE" == "1" ]]; then
 	if [[ "$SERVER" == "1" ]]; then
 		NEED_NODE="Y"
 		
-		install_nodejs "$USERNAME"
+		read -p "Select NodeJS Version (default --lts): " NODE_VERSION
+		NODE_VERSION=${NODE_VERSION:---lts}
+		install_nodejs "$USERNAME" "$NODE_VERSION"
 		
 		read -p "Local port for Node.js app (default 3000): " NODE_LOCAL_PORT
 		NODE_LOCAL_PORT=${NODE_LOCAL_PORT:-3000}
@@ -538,7 +543,9 @@ elif [[ "$PROJECT_STRUCTURE" == "2" ]]; then
 	setup_default_directory "$PROJECT_STRUCTURE" "$USERNAME"
 	
 	if [[ "$FRONTEND_SERVER" == "1" ]] || [[ "$BACKEND_SERVER" == "1" ]]; then
-		install_nodejs "$USERNAME"
+		read -p "Select NodeJS Version (default --lts): " NODE_VERSION
+		NODE_VERSION=${NODE_VERSION:---lts}
+		install_nodejs "$USERNAME" "$NODE_VERSION"
 	fi
 	
 	if [[ "$FRONTEND_SERVER" == "1" ]]; then
@@ -601,7 +608,10 @@ elif [[ "$PROJECT_STRUCTURE" == "3" ]]; then
 	
 	if [[ "$BACKEND_SERVER" == "1" ]]; then
 		NEED_BACKEND_NODE="Y"
-		install_nodejs "$USERNAME"
+		
+		read -p "Select NodeJS Version (default --lts): " NODE_VERSION
+		NODE_VERSION=${NODE_VERSION:---lts}
+		install_nodejs "$USERNAME" "$NODE_VERSION"
 		
 		read -p "Local port for backend Node.js api (default 3000): " NODE_BACKEND_LOCAL_PORT
 		NODE_BACKEND_LOCAL_PORT=${NODE_BACKEND_LOCAL_PORT:-3000}
