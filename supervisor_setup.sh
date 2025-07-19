@@ -8,7 +8,7 @@ setup_supervisor() {
 	local USERNAME=$1
 	local PUBLIC_DIRECTORY=${2:-public_api}
 	local USER_HOME="/home/$USERNAME"
-	local APP_DIR="$USER_HOME/$PUBLIC_DIRECTORY".
+	local APP_DIR="$USER_HOME/$PUBLIC_DIRECTORY"
 	local SUPERVISOR_DIR="$USER_HOME/supervisor"
 	local LOG_DIR="$USER_HOME/logs"
 	local BASHRC="$USER_HOME/.bashrc"
