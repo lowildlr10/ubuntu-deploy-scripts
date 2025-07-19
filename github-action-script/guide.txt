@@ -1,0 +1,67 @@
+GitHub Actions Runner Setup Guide (Raw Text)
+
+1. Prepare the GitHub Actions runner directory:
+   mkdir -p ~/actions-runner/<username>-html  # or -app / -api
+
+2. Download the runner binary:
+   cd ~/actions-runner/<username>-html
+   curl -o actions-runner-linux-x64-2.326.0.tar.gz -L https://github.com/actions/runner/releases/download/v2.326.0/actions-runner-linux-x64-2.326.0.tar.gz
+   echo "9c74af9b4352bbc99aecc7353b47bcdfcd1b2a0f6d15af54a99f54a0c14a1de8  actions-runner-linux-x64-2.326.0.tar.gz" | shasum -a 256 -c
+   tar xzf ./actions-runner-linux-x64-2.326.0.tar.gz
+
+3. Configure and register the runner:
+   cd ~/actions-runner/<username>-html
+   ./config.sh \
+     --url https://github.com/your-org/your-repo \
+     --token YOUR_RUNNER_TOKEN \
+     --name pims-html-runner \
+     --labels html,frontend,ubuntu \
+     --work pims-html-work
+
+4. Allow passwordless sudo (optional):
+   sudo visudo
+   Add these lines near the bottom if not already present:
+     <username> ALL=(ALL) NOPASSWD:ALL
+     Defaults:<username> !requiretty
+   Save and exit.
+
+5. Create a systemd service for autostart:
+   nano ~/actions-runner/<username>-html/github-runner-<username>-html.service
+
+   Insert the following content:
+   -----------------------------------------------------------
+   [Unit]
+   Description=GitHub Actions Runner for <username>-html
+   After=network.target
+
+   [Service]
+   User=<username>
+   WorkingDirectory=/home/<username>/actions-runner/<username>-html
+   ExecStart=/home/<username>/actions-runner/<username>-html/run.sh
+   Restart=always
+   RestartSec=5
+
+   [Install]
+   WantedBy=multi-user.target
+   -----------------------------------------------------------
+
+6. Register the service with systemd:
+   sudo ln -s /home/<username>/actions-runner/<username>-html/github-runner-<username>-html.service /etc/systemd/system/github-runner-<username>-html.service
+   sudo systemctl daemon-reexec
+   sudo systemctl daemon-reload
+   sudo systemctl enable github-runner-<username>-html
+   sudo systemctl start github-runner-<username>-html
+
+7. Create or update the GitHub Actions workflow file:
+   In your app repo, edit or add a YAML file:
+   .github/workflows/<your-workflow>.yaml
+
+   Example:
+     name: CI
+     on: [push]
+     jobs:
+       build:
+         runs-on: [html, ubuntu]
+         steps:
+           - uses: actions/checkout@v3
+           - run: echo "Hello from self-hosted runner!"
