@@ -259,7 +259,7 @@ server {
 	index index.php index.html index.htm;
 
 	location / {
-		try_files $uri $uri/ /index.php$is_args$args;
+		try_files \$uri \$uri/ /index.php\$is_args\$args;
 	}
 
 	location ~ \.php$ {
@@ -571,7 +571,7 @@ elif [[ "$PROJECT_STRUCTURE" == "2" ]]; then
 		FRONTEND_PORT=${FRONTEND_PORT:-80}
 
 		install_php_version "$USERNAME" "$FRONTEND_PHP_VERSION"
-		setup_nginx_config "$IS_LARAVEL" "$USERNAME" "$PROJECT_STRUCTURE" "FRONTEND_PHP_VERSION" "$FRONTEND_PORT" "Y"
+		setup_nginx_config "$IS_LARAVEL" "$USERNAME" "$PROJECT_STRUCTURE" "$FRONTEND_PHP_VERSION" "$FRONTEND_PORT" "Y"
 	fi
 	
 	if [[ "$BACKEND_SERVER" == "1" ]]; then

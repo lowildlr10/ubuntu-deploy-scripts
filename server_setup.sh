@@ -51,8 +51,9 @@ sudo apt install -y postgresql postgresql-contrib
 sudo systemctl enable --now postgresql
 
 # Configure PostgreSQL to listen on all IP addresses
-PG_HBA="/etc/postgresql/$(ls /etc/postgresql)/main/pg_hba.conf"
-POSTGRESQL_CONF="/etc/postgresql/$(ls /etc/postgresql)/main/postgresql.conf"
+PG_VERSION=$(ls /etc/postgresql | sort -V | tail -n1)
+PG_HBA="/etc/postgresql/$PG_VERSION/main/pg_hba.conf"
+POSTGRESQL_CONF="/etc/postgresql/$PG_VERSION/main/postgresql.conf"
 
 sudo sed -i "s/#listen_addresses = .*/listen_addresses = '*'/" "$POSTGRESQL_CONF"
 echo "host    all             all             0.0.0.0/0               md5" | sudo tee -a "$PG_HBA" > /dev/null
@@ -66,7 +67,12 @@ sudo add-apt-repository ppa:ondrej/php -y
 sudo apt update -y
 
 # Prevent Apache and mod-php from being installed
-sudo apt-mark hold apache2 apache2-bin apache2-data apache2-utils libapache2-mod-php*
+sudo apt-mark hold apache2 apache2-bin apache2-data apache2-utils
+LIBAPACHE_MOD_PHP_PKGS=$(apt-cache pkgnames 'libapache2-mod-php')
+if [[ -n "$LIBAPACHE_MOD_PHP_PKGS" ]]; then
+  # shellcheck disable=SC2086
+  sudo apt-mark hold $LIBAPACHE_MOD_PHP_PKGS
+fi
 
 # Install PHP-FPM and extensions only (no apache)
 sudo apt install -y \
@@ -85,7 +91,7 @@ sudo systemctl enable --now php${PHP_VERSION}-fpm
 
 # --- 7. Node.js ---
 log "Installing Node.js..."
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt install -y nodejs
 
 # --- 8. Zip and Unzip ---

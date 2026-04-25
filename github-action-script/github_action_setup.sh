@@ -27,7 +27,7 @@ cd "$RUNNER_DIR"
 echo "[2/6] Downloading GitHub Actions runner..."
 curl -o actions-runner-linux-x64-2.326.0.tar.gz -L https://github.com/actions/runner/releases/download/v2.326.0/actions-runner-linux-x64-2.326.0.tar.gz
 echo "Verifying checksum..."
-echo "9c74af9b4352bbc99aecc7353b47bcdfcd1b2a0f6d15af54a99f54a0c14a1de8  actions-runner-linux-x64-2.326.0.tar.gz" | shasum -a 256 -c
+echo "9c74af9b4352bbc99aecc7353b47bcdfcd1b2a0f6d15af54a99f54a0c14a1de8  actions-runner-linux-x64-2.326.0.tar.gz" | sha256sum -c
 tar xzf actions-runner-linux-x64-2.326.0.tar.gz
 
 # 3. Prompt to configure the runner
@@ -46,14 +46,6 @@ read -rp "Work Folder Name (e.g. ${APPNAME}-work): " WORK_NAME
   --work "$WORK_NAME"
 
 # 4. Add sudoers entry
-echo "[4/6] Ensuring passwordless sudo for $USERNAME..."
-SUDOERS_LINE="${USERNAME} ALL=(ALL) NOPASSWD:ALL"
-REQUIRETTY_LINE="Defaults:${USERNAME} !requiretty"
-
-sudo grep -qF "$SUDOERS_LINE" /etc/sudoers || echo "$SUDOERS_LINE" | sudo tee -a /etc/sudoers
-sudo grep -qF "$REQUIRETTY_LINE" /etc/sudoers || echo "$REQUIRETTY_LINE" | sudo tee -a /etc/sudoers
-
-# 4. Add sudoers entry (modular and safe)
 echo "[4/6] Ensuring passwordless sudo for $USERNAME using /etc/sudoers.d..."
 
 SUDOERS_FILE="/etc/sudoers.d/${USERNAME}"
@@ -95,7 +87,6 @@ EOF
 echo "[6/6] Enabling and starting systemd service..."
 
 sudo ln -sf "$SERVICE_FILE" "/etc/systemd/system/${SERVICE_NAME}.service"
-sudo systemctl daemon-reexec
 sudo systemctl daemon-reload
 sudo systemctl enable "${SERVICE_NAME}"
 sudo systemctl start "${SERVICE_NAME}"
