@@ -13,6 +13,12 @@ log() {
 
 read -p "Press Enter to start the initial server setup..."
 
+# Disable background apt processes that hold the dpkg lock
+sudo systemctl stop unattended-upgrades 2>/dev/null || true
+sudo systemctl disable unattended-upgrades 2>/dev/null || true
+sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+sudo systemctl disable apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+
 # --- 1. System Update ---
 log "Updating system and installing base tools..."
 sudo apt update -y && sudo apt upgrade -y
