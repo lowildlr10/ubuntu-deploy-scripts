@@ -7,6 +7,8 @@
 
 set -e
 
+export DEBIAN_FRONTEND=noninteractive
+
 log() {
   echo -e "\n--- $1 ---\n"
 }
