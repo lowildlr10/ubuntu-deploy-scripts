@@ -4,6 +4,68 @@
 
 set -e
 
+# --- Rollback State ---
+CREATED_USER=false
+CREATED_SSH_CONFIG=false
+INSTALLED_PHP_VERSIONS=()
+CREATED_NGINX_CONFIGS=()
+UFW_PORTS=()
+CREATED_DB=false
+DB_TYPE=""
+
+cleanup() {
+  local exit_code=$?
+  [[ $exit_code -eq 0 ]] && return
+
+  echo ""
+  echo "⚠️  Error occurred. Rolling back changes for '${USERNAME:-<unknown>}'..."
+
+  if [[ "$CREATED_DB" == true ]]; then
+    if [[ "$DB_TYPE" == "mysql" ]]; then
+      sudo mysql -e "DROP DATABASE IF EXISTS \`$DB_NAME\`; DROP USER IF EXISTS '$USERNAME'@'localhost'; FLUSH PRIVILEGES;" 2>/dev/null || true
+    elif [[ "$DB_TYPE" == "postgres" ]]; then
+      sudo -u postgres psql -c "DROP DATABASE IF EXISTS $DB_NAME;" 2>/dev/null || true
+      sudo -u postgres psql -c "DROP USER IF EXISTS $USERNAME;" 2>/dev/null || true
+    fi
+    echo "  ↩️  Database removed."
+  fi
+
+  for port in "${UFW_PORTS[@]}"; do
+    sudo ufw delete allow "$port" 2>/dev/null || true
+  done
+  [[ ${#UFW_PORTS[@]} -gt 0 ]] && echo "  ↩️  UFW rules removed."
+
+  for conf in "${CREATED_NGINX_CONFIGS[@]}"; do
+    sudo rm -f "/etc/nginx/sites-enabled/$conf" 2>/dev/null || true
+  done
+  if [[ ${#CREATED_NGINX_CONFIGS[@]} -gt 0 ]]; then
+    sudo nginx -t 2>/dev/null && sudo systemctl reload nginx 2>/dev/null || true
+    echo "  ↩️  Nginx configs removed."
+  fi
+
+  for ver in "${INSTALLED_PHP_VERSIONS[@]}"; do
+    sudo rm -f "/etc/php/$ver/fpm/pool.d/$USERNAME.conf" 2>/dev/null || true
+    sudo systemctl restart "php$ver-fpm" 2>/dev/null || true
+  done
+  [[ ${#INSTALLED_PHP_VERSIONS[@]} -gt 0 ]] && echo "  ↩️  PHP-FPM pools removed."
+
+  if [[ "$CREATED_SSH_CONFIG" == true ]]; then
+    sudo rm -f "/etc/ssh/sshd_config.d/99-${USERNAME}.conf" 2>/dev/null || true
+    sudo systemctl restart ssh 2>/dev/null || true
+    echo "  ↩️  SSH config removed."
+  fi
+
+  if [[ "$CREATED_USER" == true ]]; then
+    sudo userdel -r "$USERNAME" 2>/dev/null || true
+    echo "  ↩️  User '$USERNAME' removed."
+  fi
+
+  echo "↩️  Rollback complete."
+  exit $exit_code
+}
+
+trap cleanup ERR
+
 install_nodejs() {
 	local USERNAME="$1"
 	local NODE_VERSION="${2:---lts}"
@@ -73,6 +135,7 @@ EOF
 
 	# Symlink to system pool directory
 	sudo ln -sf "$LOCAL_POOL_CONF" "$SYSTEM_POOL_CONF"
+	INSTALLED_PHP_VERSIONS+=("$PHP_VERSION")
 	echo "✅ PHP-FPM pool linked at $SYSTEM_POOL_CONF using config from user directory."
 
 	# Restart PHP-FPM service
@@ -279,14 +342,16 @@ EOF
 	
 	# Symlink to global sites-enabled so nginx picks it up
 	sudo ln -sf "$CONF" "/etc/nginx/sites-enabled/$CONFIG_NAME"
-	
+	CREATED_NGINX_CONFIGS+=("$CONFIG_NAME")
+
 	# Reload Nginx
 	sudo nginx -t && sudo systemctl reload nginx
 	echo "✅ Nginx configured for listen port $PORT"
-	
+
 	# --- UFW Firewall Rules ---
 	echo "🛡️  Applying UFW firewall rules..."
 	sudo ufw allow "$PORT" comment "Allow Nginx + PHP listen port for $USERNAME"
+	UFW_PORTS+=("$PORT")
 	echo "✅ UFW allowed listen port $PORT for Nginx + PHP"
 	echo ""
 }
@@ -354,6 +419,7 @@ EOF
 	
 	# --- Enable site ---
 	sudo ln -sf "$CONF" "/etc/nginx/sites-enabled/$CONFIG_NAME"
+	CREATED_NGINX_CONFIGS+=("$CONFIG_NAME")
 	sudo nginx -t && sudo systemctl reload nginx
 	echo "✅ Nginx reverse proxy configured for Node.js listen port $PORT"
 	
@@ -395,6 +461,7 @@ EOF
 	# --- UFW Firewall Rules ---
 	echo "🛡️  Applying UFW firewall rules..."
 	sudo ufw allow "$PORT" comment "Allow Node.js listen port for $USERNAME"
+	UFW_PORTS+=("$PORT")
 	echo "✅ UFW allowed listen port $PORT for Node.js"
 	echo ""
 }
@@ -412,6 +479,7 @@ if ! id "$USERNAME" &>/dev/null; then
 	echo "❌ Failed to create user '$USERNAME'."
 	exit 1
 fi
+CREATED_USER=true
 
 USER_HOME="/home/$USERNAME"
 SSH_DIR="$USER_HOME/.ssh"
@@ -448,6 +516,7 @@ SSH_CONFIG_FILE="/etc/ssh/sshd_config.d/99-${USERNAME}.conf"
 
 # Ensure config permissions
 sudo chmod 644 "$SSH_CONFIG_FILE"
+CREATED_SSH_CONFIG=true
 
 # Restart SSH to apply changes
 sudo systemctl restart ssh
@@ -670,12 +739,14 @@ if [[ "$DB_CHOICE" == "1" ]]; then
 	read -p "Enter DB name: " DB_NAME
 	DB_PASS=$(openssl rand -base64 12)
 	sudo mysql -e "CREATE DATABASE $DB_NAME; CREATE USER '$USERNAME'@'localhost' IDENTIFIED BY '$DB_PASS'; GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$USERNAME'@'localhost'; FLUSH PRIVILEGES;"
-	echo "✅ Databse '$DB_NAME' successfully created"
+	CREATED_DB=true; DB_TYPE="mysql"
+	echo "✅ Database '$DB_NAME' successfully created"
 elif [[ "$DB_CHOICE" == "2" ]]; then
 	read -p "Enter DB name: " DB_NAME
 	DB_PASS=$(openssl rand -base64 12)
 	sudo -u postgres psql -c "CREATE USER $USERNAME WITH PASSWORD '$DB_PASS';"
 	sudo -u postgres psql -c "CREATE DATABASE $DB_NAME OWNER $USERNAME;"
+	CREATED_DB=true; DB_TYPE="postgres"
 	echo ""
 fi
 
