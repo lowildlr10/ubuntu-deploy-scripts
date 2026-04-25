@@ -778,11 +778,10 @@ if [[ "$NEED_SSL" =~ ^[Yy]$ ]]; then
     CLEANED_DOMAINS+=("$(echo "$D" | xargs)")
   done
 
-  # Build server_name value (space-separated list of domains)
   DOMAIN_SERVER_NAMES="${CLEANED_DOMAINS[*]}"
+  PRIMARY_DOMAIN="${CLEANED_DOMAINS[0]}"
 
-  # Patch server_name in all user nginx configs so certbot targets the right config
-  # instead of falling back to the default site
+  # Patch server_name so certbot can authenticate against the right nginx block
   for CONF in /home/"$USERNAME"/nginx/sites-available/"$USERNAME"_*.conf; do
     [[ -f "$CONF" ]] || continue
     sudo sed -i "s/server_name _;/server_name $DOMAIN_SERVER_NAMES;/" "$CONF"
@@ -790,13 +789,52 @@ if [[ "$NEED_SSL" =~ ^[Yy]$ ]]; then
   done
   sudo nginx -t && sudo systemctl reload nginx
 
-  # Build certbot -d flags from all domains
+  # Build certbot -d flags
   CERTBOT_DOMAINS=()
   for D in "${CLEANED_DOMAINS[@]}"; do
     CERTBOT_DOMAINS+=(-d "$D")
   done
 
-  sudo certbot --nginx "${CERTBOT_DOMAINS[@]}" --register-unsafely-without-email --agree-tos
+  # certonly: obtain the cert without letting certbot restructure nginx configs
+  sudo certbot certonly --nginx "${CERTBOT_DOMAINS[@]}" --register-unsafely-without-email --agree-tos
+
+  # Rewrite each user nginx config as a clean two-block structure:
+  #   block 1 — HTTP (port 80) → 301 redirect to HTTPS
+  #   block 2 — HTTPS (port 443) → SSL + actual app content
+  for CONF in /home/"$USERNAME"/nginx/sites-available/"$USERNAME"_*.conf; do
+    [[ -f "$CONF" ]] || continue
+
+    # Extract the inner body: strip the outer server{} line and listen/server_name directives
+    INNER=$(tail -n +2 "$CONF" | head -n -1 | grep -v "^\s*\(listen\|server_name\)\s")
+
+    # Write the SSL header (bash variables expand here)
+    sudo tee "$CONF" > /dev/null <<HEREDOC
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $DOMAIN_SERVER_NAMES;
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name $DOMAIN_SERVER_NAMES;
+
+    ssl_certificate /etc/letsencrypt/live/$PRIMARY_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$PRIMARY_DOMAIN/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+HEREDOC
+
+    # Append inner body as-is (nginx variables like $uri must not be bash-expanded)
+    printf '%s\n' "$INNER" | sudo tee -a "$CONF" > /dev/null
+    printf '}\n' | sudo tee -a "$CONF" > /dev/null
+
+    echo "✅ Rewrote $(basename "$CONF") with clean two-block SSL structure"
+  done
+
+  sudo nginx -t && sudo systemctl reload nginx
   echo "✅ SSL certificates applied."
   echo ""
 fi
