@@ -181,7 +181,7 @@ setup_default_directory() {
 		sudo find /home/$2/{public_app,public_api,logs} -type d -exec chmod 755 {} +
 		sudo find /home/$2/{public_app,public_api,logs} -type f -exec chmod 644 {} +
 	elif [[ "$1" == "3" ]]; then
-		mkdir -p /home/$2/{public_app,public_api,logs}
+		mkdir -p /home/$2/{public_api,logs}
 		sudo chown -R $2:www-data /home/$2/{public_api,logs}
 		sudo find /home/$2/{public_api,logs} -type d -exec chmod 755 {} +
 		sudo find /home/$2/{public_api,logs} -type f -exec chmod 644 {} +
