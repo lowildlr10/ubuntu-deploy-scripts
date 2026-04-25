@@ -81,7 +81,7 @@ log "✔ PostgreSQL now accepts remote connections on port 5432"
 
 # --- 6. PHP & FPM ---
 log "Installing PHP and FPM..."
-sudo add-apt-repository ppa:ondrej/php -y
+sudo add-apt-repository ppa:ondrej/php -y --no-update
 apt_update
 
 # Prevent Apache and mod-php from being installed
