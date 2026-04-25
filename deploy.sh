@@ -768,11 +768,35 @@ fi
 read -p "Apply SSL via Let's Encrypt? (Y/n): " NEED_SSL
 if [[ "$NEED_SSL" =~ ^[Yy]$ ]]; then
   sudo apt install -y certbot python3-certbot-nginx
+
   read -p "Enter domain(s) (comma-separated): " DOMAINS
   IFS=',' read -ra DOMAIN_LIST <<< "$DOMAINS"
-  for DOMAIN in "${DOMAIN_LIST[@]}"; do
-    sudo certbot --nginx -d "$DOMAIN" --register-unsafely-without-email --agree-tos
+
+  # Trim whitespace from each domain
+  CLEANED_DOMAINS=()
+  for D in "${DOMAIN_LIST[@]}"; do
+    CLEANED_DOMAINS+=("$(echo "$D" | xargs)")
   done
+
+  # Build server_name value (space-separated list of domains)
+  DOMAIN_SERVER_NAMES="${CLEANED_DOMAINS[*]}"
+
+  # Patch server_name in all user nginx configs so certbot targets the right config
+  # instead of falling back to the default site
+  for CONF in /home/"$USERNAME"/nginx/sites-available/"$USERNAME"_*.conf; do
+    [[ -f "$CONF" ]] || continue
+    sudo sed -i "s/server_name _;/server_name $DOMAIN_SERVER_NAMES;/" "$CONF"
+    echo "✅ Updated server_name in $(basename "$CONF")"
+  done
+  sudo nginx -t && sudo systemctl reload nginx
+
+  # Build certbot -d flags from all domains
+  CERTBOT_DOMAINS=()
+  for D in "${CLEANED_DOMAINS[@]}"; do
+    CERTBOT_DOMAINS+=(-d "$D")
+  done
+
+  sudo certbot --nginx "${CERTBOT_DOMAINS[@]}" --register-unsafely-without-email --agree-tos
   echo "✅ SSL certificates applied."
   echo ""
 fi
