@@ -99,16 +99,36 @@ read -p "Remove Let's Encrypt certs? (Y/n): " REMOVE_SSL
 if [[ "$REMOVE_SSL" =~ ^[Yy]$ ]]; then
 	read -p "Enter domain(s) (comma-separated): " DOMAINS
 	IFS=',' read -ra DOMAIN_LIST <<< "$DOMAINS"
-	
+
 	for DOMAIN in "${DOMAIN_LIST[@]}"; do
 		DOMAIN=$(echo "$DOMAIN" | xargs)
-		
+
 		if [[ -n "$DOMAIN" ]]; then
 			sudo certbot delete --cert-name "$DOMAIN" || echo "⚠️ Certificate '$DOMAIN' not found."
+
+			# Strip certbot-injected SSL directives and redirect server blocks from any nginx config
+			while IFS= read -r CONF_FILE; do
+				# Remove lines certbot tagged with its comment marker
+				sudo sed -i '/# managed by Certbot/d' "$CONF_FILE"
+
+				# Remove stale certbot redirect server block (the second server {} block)
+				LINE=$(awk '/^server \{/{c++; if(c==2){print NR; exit}}' "$CONF_FILE")
+				if [[ -n "$LINE" ]]; then
+					sudo sed -i "${LINE},\$d" "$CONF_FILE"
+				fi
+			done < <(sudo grep -rl "$DOMAIN" /etc/nginx/ 2>/dev/null || true)
 		fi
 	done
-	
-	echo "✅ SSL certs removed."
+
+	# Reload nginx after cleaning up certbot remnants
+	if sudo nginx -t &>/dev/null; then
+		sudo systemctl reload nginx
+		echo "✅ Nginx reloaded after SSL cleanup."
+	else
+		echo "⚠️ Nginx config still invalid after SSL cleanup. Manual check needed."
+	fi
+
+	echo "✅ SSL certs and nginx SSL config removed."
 fi
 echo ""
 
