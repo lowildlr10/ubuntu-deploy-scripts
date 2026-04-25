@@ -8,9 +8,15 @@
 set -e
 
 export DEBIAN_FRONTEND=noninteractive
+APT_OPTS="-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3"
 
 log() {
   echo -e "\n--- $1 ---\n"
+}
+
+apt_update() {
+  # shellcheck disable=SC2086
+  sudo apt $APT_OPTS update -y
 }
 
 read -p "Press Enter to start the initial server setup..."
@@ -27,7 +33,7 @@ sudo dpkg --configure -a 2>/dev/null || true
 
 # --- 1. System Update ---
 log "Updating system and installing base tools..."
-sudo apt update -y && sudo apt upgrade -y
+apt_update && sudo apt upgrade -y
 sudo apt install -y software-properties-common curl gnupg2 ufw ca-certificates lsb-release apt-transport-https
 
 # --- 2. UFW Setup ---
@@ -76,7 +82,7 @@ log "✔ PostgreSQL now accepts remote connections on port 5432"
 # --- 6. PHP & FPM ---
 log "Installing PHP and FPM..."
 sudo add-apt-repository ppa:ondrej/php -y
-sudo apt update -y
+apt_update
 
 # Prevent Apache and mod-php from being installed
 sudo apt-mark hold apache2 apache2-bin apache2-data apache2-utils
