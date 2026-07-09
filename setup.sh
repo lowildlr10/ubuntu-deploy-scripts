@@ -27,7 +27,7 @@ while true; do
   echo "7) Exit"
   echo ""
 
-  read -rp "Enter your choice [1-6]: " ACTION
+  read -rp "Enter your choice [1-7]: " ACTION
 
   case $ACTION in
     1)

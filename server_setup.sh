@@ -7,15 +7,33 @@
 
 set -e
 
+export DEBIAN_FRONTEND=noninteractive
+APT_OPTS="-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3"
+
 log() {
   echo -e "\n--- $1 ---\n"
 }
 
+apt_update() {
+  # shellcheck disable=SC2086
+  sudo apt $APT_OPTS update -y
+}
+
 read -p "Press Enter to start the initial server setup..."
+
+# Disable background apt processes that hold the dpkg lock
+# systemctl stop blocks if unattended-upgrades is mid-run, so SIGKILL first
+sudo systemctl kill --kill-who=all unattended-upgrades 2>/dev/null || true
+sudo systemctl stop unattended-upgrades 2>/dev/null || true
+sudo systemctl disable unattended-upgrades 2>/dev/null || true
+sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+sudo systemctl disable apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+# Repair dpkg state in case the kill interrupted a transaction
+sudo dpkg --configure -a 2>/dev/null || true
 
 # --- 1. System Update ---
 log "Updating system and installing base tools..."
-sudo apt update -y && sudo apt upgrade -y
+apt_update && sudo apt upgrade -y
 sudo apt install -y software-properties-common curl gnupg2 ufw ca-certificates lsb-release apt-transport-https
 
 # --- 2. UFW Setup ---
@@ -51,8 +69,9 @@ sudo apt install -y postgresql postgresql-contrib
 sudo systemctl enable --now postgresql
 
 # Configure PostgreSQL to listen on all IP addresses
-PG_HBA="/etc/postgresql/$(ls /etc/postgresql)/main/pg_hba.conf"
-POSTGRESQL_CONF="/etc/postgresql/$(ls /etc/postgresql)/main/postgresql.conf"
+PG_VERSION=$(ls /etc/postgresql | sort -V | tail -n1)
+PG_HBA="/etc/postgresql/$PG_VERSION/main/pg_hba.conf"
+POSTGRESQL_CONF="/etc/postgresql/$PG_VERSION/main/postgresql.conf"
 
 sudo sed -i "s/#listen_addresses = .*/listen_addresses = '*'/" "$POSTGRESQL_CONF"
 echo "host    all             all             0.0.0.0/0               md5" | sudo tee -a "$PG_HBA" > /dev/null
@@ -62,11 +81,16 @@ log "✔ PostgreSQL now accepts remote connections on port 5432"
 
 # --- 6. PHP & FPM ---
 log "Installing PHP and FPM..."
-sudo add-apt-repository ppa:ondrej/php -y
-sudo apt update -y
+sudo add-apt-repository ppa:ondrej/php -y --no-update
+apt_update
 
 # Prevent Apache and mod-php from being installed
-sudo apt-mark hold apache2 apache2-bin apache2-data apache2-utils libapache2-mod-php*
+sudo apt-mark hold apache2 apache2-bin apache2-data apache2-utils
+LIBAPACHE_MOD_PHP_PKGS=$(apt-cache pkgnames 'libapache2-mod-php')
+if [[ -n "$LIBAPACHE_MOD_PHP_PKGS" ]]; then
+  # shellcheck disable=SC2086
+  sudo apt-mark hold $LIBAPACHE_MOD_PHP_PKGS
+fi
 
 # Install PHP-FPM and extensions only (no apache)
 sudo apt install -y \
@@ -85,7 +109,7 @@ sudo systemctl enable --now php${PHP_VERSION}-fpm
 
 # --- 7. Node.js ---
 log "Installing Node.js..."
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt install -y nodejs
 
 # --- 8. Zip and Unzip ---

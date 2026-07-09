@@ -55,7 +55,8 @@ echo "Cleaning up PM2 processes and config for '$USERNAME'..."
 
 sudo -u "$USERNAME" bash <<EOF
   export HOME="/home/$USERNAME"
-  export PATH="\$HOME/.nvm/versions/node/*/bin:\$PATH"
+  export NVM_DIR="\$HOME/.nvm"
+  [ -s "\$NVM_DIR/nvm.sh" ] && \. "\$NVM_DIR/nvm.sh"
 
   if command -v pm2 >/dev/null 2>&1; then
 	pm2 delete all || echo "ℹ️ No PM2 apps to delete."
@@ -69,11 +70,20 @@ sudo rm -rf "/home/$USERNAME/.pm2"
 echo "✅ PM2 cleanup done."
 echo ""
 
+# --- Remove Crontab ---
+echo "Removing crontab for '$USERNAME'..."
+if sudo crontab -r -u "$USERNAME" 2>/dev/null; then
+	echo "✅ Crontab removed."
+else
+	echo "ℹ️ No crontab found for '$USERNAME'."
+fi
+echo ""
+
 # --- Remove Nginx and SSH Configs ---
 echo "Removing Nginx and SSH configs..."
-sudo rm -f "/etc/nginx/sites-enabled/${USERNAME}_*"
-sudo rm -f "/etc/nginx/sites-available/${USERNAME}_*"
-sudo rm -f "/home/${USERNAME}/nginx/sites-available/${USERNAME}_*"
+sudo rm -f /etc/nginx/sites-enabled/"${USERNAME}"_*
+sudo rm -f /etc/nginx/sites-available/"${USERNAME}"_*
+sudo rm -f /home/"${USERNAME}"/nginx/sites-available/"${USERNAME}"_*
 sudo rm -f "/etc/ssh/sshd_config.d/99-${USERNAME}.conf"
 
 if sudo nginx -t &>/dev/null; then
@@ -89,16 +99,36 @@ read -p "Remove Let's Encrypt certs? (Y/n): " REMOVE_SSL
 if [[ "$REMOVE_SSL" =~ ^[Yy]$ ]]; then
 	read -p "Enter domain(s) (comma-separated): " DOMAINS
 	IFS=',' read -ra DOMAIN_LIST <<< "$DOMAINS"
-	
+
 	for DOMAIN in "${DOMAIN_LIST[@]}"; do
 		DOMAIN=$(echo "$DOMAIN" | xargs)
-		
+
 		if [[ -n "$DOMAIN" ]]; then
 			sudo certbot delete --cert-name "$DOMAIN" || echo "⚠️ Certificate '$DOMAIN' not found."
+
+			# Strip certbot-injected SSL directives and redirect server blocks from any nginx config
+			while IFS= read -r CONF_FILE; do
+				# Remove lines certbot tagged with its comment marker
+				sudo sed -i '/# managed by Certbot/d' "$CONF_FILE"
+
+				# Remove stale certbot redirect server block (the second server {} block)
+				LINE=$(awk '/^server \{/{c++; if(c==2){print NR; exit}}' "$CONF_FILE")
+				if [[ -n "$LINE" ]]; then
+					sudo sed -i "${LINE},\$d" "$CONF_FILE"
+				fi
+			done < <(sudo grep -rl "$DOMAIN" /etc/nginx/ 2>/dev/null || true)
 		fi
 	done
-	
-	echo "✅ SSL certs removed."
+
+	# Reload nginx after cleaning up certbot remnants
+	if sudo nginx -t &>/dev/null; then
+		sudo systemctl reload nginx
+		echo "✅ Nginx reloaded after SSL cleanup."
+	else
+		echo "⚠️ Nginx config still invalid after SSL cleanup. Manual check needed."
+	fi
+
+	echo "✅ SSL certs and nginx SSL config removed."
 fi
 echo ""
 
@@ -215,7 +245,7 @@ if [[ -z "$MATCHED" ]]; then
 else
 	RULE_NUMS=$(echo "$MATCHED" | awk '{print $1}' | tr -d '[]' | tac)
 	for NUM in $RULE_NUMS; do
-		sudo ufw delete "$NUM"
+		sudo ufw --force delete "$NUM"
 	done
 	echo "✅ Removed UFW rules for user '$USERNAME'."
 fi

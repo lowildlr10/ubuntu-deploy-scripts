@@ -4,6 +4,68 @@
 
 set -e
 
+# --- Rollback State ---
+CREATED_USER=false
+CREATED_SSH_CONFIG=false
+INSTALLED_PHP_VERSIONS=()
+CREATED_NGINX_CONFIGS=()
+UFW_PORTS=()
+CREATED_DB=false
+DB_TYPE=""
+
+cleanup() {
+  local exit_code=$?
+  [[ $exit_code -eq 0 ]] && return
+
+  echo ""
+  echo "⚠️  Error occurred. Rolling back changes for '${USERNAME:-<unknown>}'..."
+
+  if [[ "$CREATED_DB" == true ]]; then
+    if [[ "$DB_TYPE" == "mysql" ]]; then
+      sudo mysql -e "DROP DATABASE IF EXISTS \`$DB_NAME\`; DROP USER IF EXISTS '$USERNAME'@'localhost'; FLUSH PRIVILEGES;" 2>/dev/null || true
+    elif [[ "$DB_TYPE" == "postgres" ]]; then
+      sudo -u postgres psql -c "DROP DATABASE IF EXISTS $DB_NAME;" 2>/dev/null || true
+      sudo -u postgres psql -c "DROP USER IF EXISTS $USERNAME;" 2>/dev/null || true
+    fi
+    echo "  ↩️  Database removed."
+  fi
+
+  for port in "${UFW_PORTS[@]}"; do
+    sudo ufw delete allow "$port" 2>/dev/null || true
+  done
+  [[ ${#UFW_PORTS[@]} -gt 0 ]] && echo "  ↩️  UFW rules removed."
+
+  for conf in "${CREATED_NGINX_CONFIGS[@]}"; do
+    sudo rm -f "/etc/nginx/sites-enabled/$conf" 2>/dev/null || true
+  done
+  if [[ ${#CREATED_NGINX_CONFIGS[@]} -gt 0 ]]; then
+    sudo nginx -t 2>/dev/null && sudo systemctl reload nginx 2>/dev/null || true
+    echo "  ↩️  Nginx configs removed."
+  fi
+
+  for ver in "${INSTALLED_PHP_VERSIONS[@]}"; do
+    sudo rm -f "/etc/php/$ver/fpm/pool.d/$USERNAME.conf" 2>/dev/null || true
+    sudo systemctl restart "php$ver-fpm" 2>/dev/null || true
+  done
+  [[ ${#INSTALLED_PHP_VERSIONS[@]} -gt 0 ]] && echo "  ↩️  PHP-FPM pools removed."
+
+  if [[ "$CREATED_SSH_CONFIG" == true ]]; then
+    sudo rm -f "/etc/ssh/sshd_config.d/99-${USERNAME}.conf" 2>/dev/null || true
+    sudo systemctl restart ssh 2>/dev/null || true
+    echo "  ↩️  SSH config removed."
+  fi
+
+  if [[ "$CREATED_USER" == true ]]; then
+    sudo userdel -r "$USERNAME" 2>/dev/null || true
+    echo "  ↩️  User '$USERNAME' removed."
+  fi
+
+  echo "↩️  Rollback complete."
+  exit $exit_code
+}
+
+trap cleanup ERR
+
 install_nodejs() {
 	local USERNAME="$1"
 	local NODE_VERSION="${2:---lts}"
@@ -73,6 +135,7 @@ EOF
 
 	# Symlink to system pool directory
 	sudo ln -sf "$LOCAL_POOL_CONF" "$SYSTEM_POOL_CONF"
+	INSTALLED_PHP_VERSIONS+=("$PHP_VERSION")
 	echo "✅ PHP-FPM pool linked at $SYSTEM_POOL_CONF using config from user directory."
 
 	# Restart PHP-FPM service
@@ -118,7 +181,7 @@ setup_default_directory() {
 		sudo find /home/$2/{public_app,public_api,logs} -type d -exec chmod 755 {} +
 		sudo find /home/$2/{public_app,public_api,logs} -type f -exec chmod 644 {} +
 	elif [[ "$1" == "3" ]]; then
-		mkdir -p /home/$2/{public_app,public_api,logs}
+		mkdir -p /home/$2/{public_api,logs}
 		sudo chown -R $2:www-data /home/$2/{public_api,logs}
 		sudo find /home/$2/{public_api,logs} -type d -exec chmod 755 {} +
 		sudo find /home/$2/{public_api,logs} -type f -exec chmod 644 {} +
@@ -259,7 +322,7 @@ server {
 	index index.php index.html index.htm;
 
 	location / {
-		try_files $uri $uri/ /index.php$is_args$args;
+		try_files \$uri \$uri/ /index.php\$is_args\$args;
 	}
 
 	location ~ \.php$ {
@@ -279,14 +342,16 @@ EOF
 	
 	# Symlink to global sites-enabled so nginx picks it up
 	sudo ln -sf "$CONF" "/etc/nginx/sites-enabled/$CONFIG_NAME"
-	
+	CREATED_NGINX_CONFIGS+=("$CONFIG_NAME")
+
 	# Reload Nginx
 	sudo nginx -t && sudo systemctl reload nginx
 	echo "✅ Nginx configured for listen port $PORT"
-	
+
 	# --- UFW Firewall Rules ---
 	echo "🛡️  Applying UFW firewall rules..."
 	sudo ufw allow "$PORT" comment "Allow Nginx + PHP listen port for $USERNAME"
+	UFW_PORTS+=("$PORT")
 	echo "✅ UFW allowed listen port $PORT for Nginx + PHP"
 	echo ""
 }
@@ -354,6 +419,7 @@ EOF
 	
 	# --- Enable site ---
 	sudo ln -sf "$CONF" "/etc/nginx/sites-enabled/$CONFIG_NAME"
+	CREATED_NGINX_CONFIGS+=("$CONFIG_NAME")
 	sudo nginx -t && sudo systemctl reload nginx
 	echo "✅ Nginx reverse proxy configured for Node.js listen port $PORT"
 	
@@ -395,6 +461,7 @@ EOF
 	# --- UFW Firewall Rules ---
 	echo "🛡️  Applying UFW firewall rules..."
 	sudo ufw allow "$PORT" comment "Allow Node.js listen port for $USERNAME"
+	UFW_PORTS+=("$PORT")
 	echo "✅ UFW allowed listen port $PORT for Node.js"
 	echo ""
 }
@@ -412,6 +479,7 @@ if ! id "$USERNAME" &>/dev/null; then
 	echo "❌ Failed to create user '$USERNAME'."
 	exit 1
 fi
+CREATED_USER=true
 
 USER_HOME="/home/$USERNAME"
 SSH_DIR="$USER_HOME/.ssh"
@@ -448,6 +516,7 @@ SSH_CONFIG_FILE="/etc/ssh/sshd_config.d/99-${USERNAME}.conf"
 
 # Ensure config permissions
 sudo chmod 644 "$SSH_CONFIG_FILE"
+CREATED_SSH_CONFIG=true
 
 # Restart SSH to apply changes
 sudo systemctl restart ssh
@@ -571,7 +640,7 @@ elif [[ "$PROJECT_STRUCTURE" == "2" ]]; then
 		FRONTEND_PORT=${FRONTEND_PORT:-80}
 
 		install_php_version "$USERNAME" "$FRONTEND_PHP_VERSION"
-		setup_nginx_config "$IS_LARAVEL" "$USERNAME" "$PROJECT_STRUCTURE" "FRONTEND_PHP_VERSION" "$FRONTEND_PORT" "Y"
+		setup_nginx_config "$IS_LARAVEL" "$USERNAME" "$PROJECT_STRUCTURE" "$FRONTEND_PHP_VERSION" "$FRONTEND_PORT" "Y"
 	fi
 	
 	if [[ "$BACKEND_SERVER" == "1" ]]; then
@@ -670,12 +739,14 @@ if [[ "$DB_CHOICE" == "1" ]]; then
 	read -p "Enter DB name: " DB_NAME
 	DB_PASS=$(openssl rand -base64 12)
 	sudo mysql -e "CREATE DATABASE $DB_NAME; CREATE USER '$USERNAME'@'localhost' IDENTIFIED BY '$DB_PASS'; GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$USERNAME'@'localhost'; FLUSH PRIVILEGES;"
-	echo "✅ Databse '$DB_NAME' successfully created"
+	CREATED_DB=true; DB_TYPE="mysql"
+	echo "✅ Database '$DB_NAME' successfully created"
 elif [[ "$DB_CHOICE" == "2" ]]; then
 	read -p "Enter DB name: " DB_NAME
 	DB_PASS=$(openssl rand -base64 12)
 	sudo -u postgres psql -c "CREATE USER $USERNAME WITH PASSWORD '$DB_PASS';"
 	sudo -u postgres psql -c "CREATE DATABASE $DB_NAME OWNER $USERNAME;"
+	CREATED_DB=true; DB_TYPE="postgres"
 	echo ""
 fi
 
@@ -697,11 +768,73 @@ fi
 read -p "Apply SSL via Let's Encrypt? (Y/n): " NEED_SSL
 if [[ "$NEED_SSL" =~ ^[Yy]$ ]]; then
   sudo apt install -y certbot python3-certbot-nginx
+
   read -p "Enter domain(s) (comma-separated): " DOMAINS
   IFS=',' read -ra DOMAIN_LIST <<< "$DOMAINS"
-  for DOMAIN in "${DOMAIN_LIST[@]}"; do
-    sudo certbot --nginx -d "$DOMAIN" --register-unsafely-without-email --agree-tos
+
+  # Trim whitespace from each domain
+  CLEANED_DOMAINS=()
+  for D in "${DOMAIN_LIST[@]}"; do
+    CLEANED_DOMAINS+=("$(echo "$D" | xargs)")
   done
+
+  DOMAIN_SERVER_NAMES="${CLEANED_DOMAINS[*]}"
+  PRIMARY_DOMAIN="${CLEANED_DOMAINS[0]}"
+
+  # Patch server_name so certbot can authenticate against the right nginx block
+  for CONF in /home/"$USERNAME"/nginx/sites-available/"$USERNAME"_*.conf; do
+    [[ -f "$CONF" ]] || continue
+    sudo sed -i "s/server_name _;/server_name $DOMAIN_SERVER_NAMES;/" "$CONF"
+    echo "✅ Updated server_name in $(basename "$CONF")"
+  done
+  sudo nginx -t && sudo systemctl reload nginx
+
+  # Build certbot -d flags
+  CERTBOT_DOMAINS=()
+  for D in "${CLEANED_DOMAINS[@]}"; do
+    CERTBOT_DOMAINS+=(-d "$D")
+  done
+
+  # certonly: obtain the cert without letting certbot restructure nginx configs
+  sudo certbot certonly --nginx "${CERTBOT_DOMAINS[@]}" --register-unsafely-without-email --agree-tos
+
+  # Rewrite each user nginx config as a clean two-block structure:
+  #   block 1 — HTTP (port 80) → 301 redirect to HTTPS
+  #   block 2 — HTTPS (port 443) → SSL + actual app content
+  for CONF in /home/"$USERNAME"/nginx/sites-available/"$USERNAME"_*.conf; do
+    [[ -f "$CONF" ]] || continue
+
+    # Extract the inner body: strip the outer server{} line and listen/server_name directives
+    INNER=$(tail -n +2 "$CONF" | head -n -1 | grep -v "^\s*\(listen\|server_name\)\s")
+
+    # Write the SSL header (bash variables expand here)
+    sudo tee "$CONF" > /dev/null <<HEREDOC
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $DOMAIN_SERVER_NAMES;
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name $DOMAIN_SERVER_NAMES;
+
+    ssl_certificate /etc/letsencrypt/live/$PRIMARY_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$PRIMARY_DOMAIN/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+HEREDOC
+
+    # Append inner body as-is (nginx variables like $uri must not be bash-expanded)
+    printf '%s\n' "$INNER" | sudo tee -a "$CONF" > /dev/null
+    printf '}\n' | sudo tee -a "$CONF" > /dev/null
+
+    echo "✅ Rewrote $(basename "$CONF") with clean two-block SSL structure"
+  done
+
+  sudo nginx -t && sudo systemctl reload nginx
   echo "✅ SSL certificates applied."
   echo ""
 fi
